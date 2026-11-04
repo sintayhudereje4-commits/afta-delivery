@@ -299,3 +299,36 @@ function refreshCartPrices(cb) {
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
+
+
+/* ===== Dark / Light theme toggle ===== */
+(function () {
+    var KEY = 'afta_theme';
+    function apply(theme) {
+        if (theme === 'dark') {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+        var btn = document.getElementById('themeToggle');
+        if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    }
+    function current() {
+        try {
+            var t = localStorage.getItem(KEY);
+            if (t === 'dark' || t === 'light') return t;
+        } catch (e) {}
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function toggle() {
+        var next = current() === 'dark' ? 'light' : 'dark';
+        try { localStorage.setItem(KEY, next); } catch (e) {}
+        apply(next);
+    }
+    // Apply icon on load
+    document.addEventListener('DOMContentLoaded', function () {
+        apply(current());
+        var btn = document.getElementById('themeToggle');
+        if (btn) btn.addEventListener('click', toggle);
+    });
+})();

@@ -22,7 +22,7 @@
 <h2>Needs your attention</h2>
 {% set todo = [
     (stats.awaiting_quote, 'Orders waiting for a delivery fee', url_for('admin_orders', status='pending')),
-    (stats.payments_to_check, 'Payments to check', url_for('admin_orders', flag='payment')),
+    (stats.payments_to_check, 'Collected money not received yet', url_for('admin_settlements')),
     (unassigned_orders, 'Orders without a transporter', url_for('admin_orders')),
     (stats.issues, 'Delivery problems', url_for('admin_orders', flag='issue')),
     (stats.refunds_due, 'Refunds to pay', url_for('admin_orders', flag='refund')),

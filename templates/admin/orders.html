@@ -16,7 +16,7 @@
         {% for s in status_choices %}
         <a href="{{ url_for('admin_orders', status=s, q=search_q) }}" class="{% if current_status == s %}active{% endif %}">{{ s.replace('_',' ')|title }}</a>
         {% endfor %}
-        <a href="{{ url_for('admin_orders', flag='payment') }}" class="{% if current_flag == 'payment' %}active{% endif %}">Payments to check</a>
+        <a href="{{ url_for('admin_orders', flag='settle') }}" class="{% if current_flag in ('settle', 'payment') %}active{% endif %}">Money to receive</a>
         <a href="{{ url_for('admin_orders', flag='issue') }}" class="{% if current_flag == 'issue' %}active{% endif %}">⚠ Issues</a>
         <a href="{{ url_for('admin_orders', flag='refund') }}" class="{% if current_flag == 'refund' %}active{% endif %}">Refund due</a>
         <a href="{{ url_for('admin_orders_export', status=current_status or None, q=search_q or None, flag=current_flag or None) }}" style="margin-left:auto;">⬇ Export CSV</a>
@@ -37,7 +37,7 @@
             <span class="badge" style="margin-left:4px;background:#eceff1;color:#455a64;">{{ o.payment_status }}</span>
             {% if o.delivery_issue and o.status not in ('delivered','cancelled') %}<span class="badge" style="margin-left:4px;background:#ffe0b2;color:#e65100;" title="{{ o.delivery_issue }}">⚠ issue</span>{% endif %}
             {% if o.refund_status == 'due' %}<span class="badge" style="margin-left:4px;background:#ffcdd2;color:#b71c1c;">refund due</span>{% endif %}
-            {% if o.status == 'out_for_delivery' and o.delivery_receipt_path and not o.cod_approved %}<span class="badge" style="margin-left:4px;background:#e1bee7;color:#4a148c;">COD receipt</span>{% endif %}
+            {% if o.pay_method and not o.settled_at %}<span class="badge" style="margin-left:4px;background:#e1bee7;color:#4a148c;">{{ 'cash' if o.pay_method == 'cash' else 'transfer' }} to receive</span>{% endif %}
             <small style="color:#888;margin-left:8px;">{{ o.created_at|addis }}</small>
         </div>
         <a href="{{ url_for('admin_order_detail', oid=o.id) }}" class="btn btn-sm btn-outline">Full detail</a>

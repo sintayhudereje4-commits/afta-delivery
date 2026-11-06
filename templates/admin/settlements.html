@@ -1,0 +1,83 @@
+{% extends "admin/base_admin.html" %}
+{% block title %}Collected money{% endblock %}
+{% block content %}
+<div class="page-header"><h1>Collected money (from transporters)</h1></div>
+<p class="hint">Customers pay the transporter when the goods arrive. <strong>Cash</strong>: the transporter hands it to you — tick it received.
+<strong>Bank transfers</strong>: check the money in your bank, then tick it received (it is added to <a href="{{ url_for('admin_bank_ledger') }}">Bank money</a>).</p>
+
+{% if not groups %}
+<div class="all-clear">✓ Nothing waiting — all collected money has been received.</div>
+{% endif %}
+
+{% for g in groups %}
+<div class="detail-card" style="margin-bottom:22px;">
+    <h3>{{ g.t.name or g.t.phone if g.t else 'No transporter' }}{% if g.t %} <small style="color:#777;">{{ g.t.phone }}</small>{% endif %}</h3>
+
+    {% if g.cash %}
+    <h4 style="margin:10px 0 6px;">Cash to receive: <span style="color:#e65100;">{{ '{:,.0f}'.format(g.cash_total) }} ብር</span> ({{ g.cash|length }} order{{ '' if g.cash|length == 1 else 's' }})</h4>
+    <div class="table-wrap"><table class="admin-table">
+        <thead><tr><th>Order</th><th>Delivered</th><th>Collected</th><th>Expected</th><th></th></tr></thead>
+        <tbody>
+        {% for o in g.cash %}
+        <tr>
+            <td><a href="{{ url_for('admin_order_detail', oid=o.id) }}">{{ o.order_number[-8:] }}</a> <small>{{ o.status }}</small></td>
+            <td>{{ o.delivery_receipt_at|addis }}</td>
+            <td><strong>{{ '{:,.0f}'.format(o.cod_amount_collected or 0) }}</strong></td>
+            <td>{{ '{:,.0f}'.format(o.cod_expected or o.total_amount) }}{% if not o.cod_approved and (o.cod_amount_collected or 0) != (o.cod_expected or o.total_amount) %} <span style="color:#c62828;">⚠</span>{% endif %}</td>
+            <td><form method="POST" style="display:inline;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="settle"><input type="hidden" name="id" value="{{ o.id }}">
+                <button class="btn btn-sm btn-primary" type="submit">Received</button></form></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+    <form method="POST" style="margin-top:8px;" onsubmit="return confirm('Mark ALL of this transporter\'s cash as received?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="settle_cash_all"><input type="hidden" name="transporter_id" value="{{ g.t.id if g.t else 0 }}">
+        <button class="btn btn-outline" type="submit">All {{ '{:,.0f}'.format(g.cash_total) }} ብር received</button>
+    </form>
+    {% endif %}
+
+    {% if g.transfer %}
+    <h4 style="margin:16px 0 6px;">Bank transfers to check: <span style="color:#e65100;">{{ '{:,.0f}'.format(g.transfer_total) }} ብር</span></h4>
+    <div class="table-wrap"><table class="admin-table">
+        <thead><tr><th>Order</th><th>Amount</th><th>Transaction</th><th>Account</th><th></th></tr></thead>
+        <tbody>
+        {% for o in g.transfer %}
+        <tr>
+            <td><a href="{{ url_for('admin_order_detail', oid=o.id) }}">{{ o.order_number[-8:] }}</a></td>
+            <td><strong>{{ '{:,.0f}'.format(o.cod_amount_collected or 0) }}</strong></td>
+            <td><code>{{ o.transaction_id }}</code></td>
+            <td colspan="2">
+                <form method="POST" style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="settle"><input type="hidden" name="id" value="{{ o.id }}">
+                    <select name="bank_id">{% for b in banks %}<option value="{{ b.id }}" {% if b.id == o.pay_bank_id %}selected{% endif %}>{{ b.bank_name }} — {{ b.account_number }}</option>{% endfor %}</select>
+                    <button class="btn btn-sm btn-primary" type="submit">Arrived in bank</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% if recent %}
+<h2>Recently received</h2>
+<div class="table-wrap"><table class="admin-table">
+    <thead><tr><th>Received</th><th>Order</th><th>Type</th><th>Amount</th><th>Transporter</th><th></th></tr></thead>
+    <tbody>
+    {% for o in recent %}
+    <tr>
+        <td>{{ o.settled_at|addis }}</td>
+        <td><a href="{{ url_for('admin_order_detail', oid=o.id) }}">{{ o.order_number[-8:] }}</a></td>
+        <td>{{ o.pay_method }}</td>
+        <td>{{ '{:,.0f}'.format(o.cod_amount_collected or 0) }}</td>
+        <td>{% set tr = transporters.get(o.transporter_id) %}{{ (tr.name or tr.phone) if tr else '' }}</td>
+        <td><form method="POST" onsubmit="return confirm('Undo?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="unsettle"><input type="hidden" name="id" value="{{ o.id }}">
+            <button class="btn btn-sm btn-outline" type="submit">Undo</button></form></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% endif %}
+{% endblock %}

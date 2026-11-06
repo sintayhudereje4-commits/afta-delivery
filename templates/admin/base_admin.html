@@ -27,7 +27,8 @@
             <a href="{{ url_for('admin_customers') }}" class="nav-item {% if ep == 'admin_customers' %}active{% endif %}">Customers</a>
 
             <div class="nav-group">Money &amp; delivery</div>
-            <a href="{{ url_for('admin_bank_ledger') }}" class="nav-item {% if ep == 'admin_bank_ledger' %}active{% endif %}">Money received</a>
+            <a href="{{ url_for('admin_settlements') }}" class="nav-item {% if ep == 'admin_settlements' %}active{% endif %}">Collected money</a>
+            <a href="{{ url_for('admin_bank_ledger') }}" class="nav-item {% if ep == 'admin_bank_ledger' %}active{% endif %}">Bank money</a>
             <a href="{{ url_for('admin_banks') }}" class="nav-item {% if ep == 'admin_banks' %}active{% endif %}">Bank accounts</a>
             <a href="{{ url_for('admin_transporters') }}" class="nav-item {% if ep == 'admin_transporters' %}active{% endif %}">Transporters</a>
 

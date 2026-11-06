@@ -4,8 +4,8 @@
 <div class="page-header">
     <h1>Bank Accounts</h1>
 </div>
-<p class="hint">Customers with orders 100–100,000 ETB deposit here and send transaction ID or receipt. For orders over 100,000 ETB they pay {{ deposit_percent }}% here and the rest to the transporter.
-    <a href="{{ url_for('admin_bank_ledger') }}"><strong>→ See the money received in these accounts</strong></a></p>
+<p class="hint">These are <strong>your shop's accounts</strong>. They are shown to the <strong>transporters</strong> (on their pages), so a customer who prefers to pay by bank transfer when the goods arrive can pay into the right account. Customers do not see them on the website.
+    <a href="{{ url_for('admin_bank_ledger') }}"><strong>→ See the bank money received</strong></a></p>
 
 <form method="POST" class="admin-form" style="margin-bottom:28px;">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

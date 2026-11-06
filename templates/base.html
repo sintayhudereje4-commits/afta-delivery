@@ -8,7 +8,7 @@
     <title>{% block title %}{{ settings.site_name }}{% endblock %}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Ethiopic:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=4">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <style>
         :root {
             --primary: {{ settings.primary_color }};
@@ -16,16 +16,6 @@
             --font-main: {{ settings.font_family|css_font }};
         }
     </style>
-        <script>
-    (function(){
-        try {
-            var t = localStorage.getItem('afta_theme');
-            if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                document.documentElement.classList.add('dark');
-            }
-        } catch(e){}
-    })();
-    </script>
     {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -54,7 +44,6 @@
                 <a href="{{ url_for('customer_login') }}" class="nav-link">{% if current_lang == 'am' %}ግባ{% else %}Login{% endif %}</a>
                 <a href="{{ url_for('register') }}" class="nav-link">{% if current_lang == 'am' %}ተመዝገብ{% else %}Register{% endif %}</a>
                 {% endif %}
-                                <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" title="Dark / Light">🌙</button>
                 <div class="lang-switch">
                     <a href="{{ url_for('set_language', lang='am') }}" class="{% if current_lang == 'am' %}active{% endif %}">አማ</a>
                     <a href="{{ url_for('set_language', lang='en') }}" class="{% if current_lang == 'en' %}active{% endif %}">EN</a>
@@ -136,8 +125,8 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=4"></script>
-    <script src="{{ url_for('static', filename='js/chat.js') }}?v=4"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3"></script>
+    <script src="{{ url_for('static', filename='js/chat.js') }}?v=3"></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

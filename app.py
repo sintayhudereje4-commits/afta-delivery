@@ -51,8 +51,17 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Business rules
 # ---------------------------------------------------------------------------
-# Payment: EVERY order is paid when the goods arrive - cash or bank transfer to the shop's account,
-# handed to the transporter (see the Order flow in README.md). There is no pre-payment any more.
+# Orders with a total in [PREPAY_MIN, PREPAY_MAX] ETB must be pre-paid by bank
+# deposit. Orders above PREPAY_MAX are paid on delivery (cash on delivery) and
+# the transporter must send a receipt to the admin.
+PREPAY_MIN = 100
+PREPAY_MAX = 100000
+# Orders above PREPAY_MAX: this percentage of the total is paid by bank right away,
+# the rest is collected in cash by the transporter on delivery.
+try:
+    DEPOSIT_PERCENT = max(10, min(90, int((os.environ.get('DEPOSIT_PERCENT') or '50').strip())))
+except ValueError:
+    DEPOSIT_PERCENT = 50
 # Legacy default sizes (kg). Prefer UNIT_PRESETS by product.unit.
 WEIGHTS = [10, 15, 25, 50, 100]
 
@@ -888,14 +897,8 @@ class Order(db.Model):
     delivery_issue_at = db.Column(db.DateTime, nullable=True)
     # Admin accepted a COD receipt whose amount differs from the order total
     cod_approved = db.Column(db.Boolean, default=False)
-    # Old orders only: part of the total that was paid by bank up-front
+    # Orders over PREPAY_MAX: part of the total paid by bank up-front (rest = cash on delivery)
     deposit_amount = db.Column(db.Float, default=0.0)
-    # Payment collected by the transporter at the door: 'cash' | 'transfer' (+ which shop account)
-    pay_method = db.Column(db.String(12), default='')
-    pay_bank_id = db.Column(db.Integer, nullable=True)
-    # When the admin received that money (cash handed over by the transporter / transfer seen in the bank)
-    settled_at = db.Column(db.DateTime, nullable=True)
-    settled_note = db.Column(db.String(120), default='')
     # Random key from the browser that made the order - lets the page find its order again after a refresh
     idem_key = db.Column(db.String(64), nullable=True, index=True)
     transporter_id = db.Column(db.Integer, db.ForeignKey('transporter.id'), nullable=True)
@@ -915,9 +918,11 @@ class Order(db.Model):
 
     @property
     def cod_expected(self):
-        """Money the transporter must collect at the door: the total, minus anything an OLD order already paid by bank."""
+        """Cash the transporter must collect on delivery (only orders above PREPAY_MAX)."""
         total = float(self.total_amount or 0)
-        return max(0.0, total - float(self.paid_amount))
+        if total > PREPAY_MAX:
+            return max(0.0, total - float(self.deposit_amount or 0))
+        return 0.0
 
     @property
     def paid_amount(self):
@@ -1523,14 +1528,9 @@ def admin_actor():
         return 'admin'
 
 
-def fee_lock_message():
-    return tx('ደንበኛው ዋጋውን ካረጋገጠ ወይም ትዕዛዙ ከተላከ በኋላ መቀየር አይቻልም። ለመቀየር መጀመሪያ "ደንበኛውን እንደገና ጠይቅ" ይጫኑ።',
-              'The price cannot be changed after the customer confirmed it or the order was sent. Press "Ask the customer again" first.')
-
-
 def fee_locked(order):
     """True when changing the delivery fee / total would contradict what the customer already did."""
-    if order.payment_status in ('cod', 'confirmed'):
+    if order.payment_status == 'confirmed':
         return True
     if order.payment_required and order.payment_status == 'pending' and (order.receipt_path or order.transaction_id):
         return True
@@ -1959,9 +1959,6 @@ def change_order_status(order, new_status, actor='', note=''):
     }
     if new_status not in ALLOWED.get(old, set()):
         return _('Cannot change status from %(old)s to %(new)s', old=old, new=new_status)
-    if (new_status in ('out_for_delivery', 'delivered') and actor != 'system'
-            and order.payment_status in ('awaiting_quote', 'awaiting_customer')):
-        return tx('ደንበኛው ዋጋውን እስካላረጋገጠ ድረስ መላክ አይቻልም።', 'The customer has not confirmed the price yet - it cannot be sent.')
     if old == 'cancelled' and order.refund_status == 'refunded':
         return tx('ገንዘቡ ተመልሷል፤ ይህን ትዕዛዝ እንደገና መክፈት አይቻልም። አዲስ ትዕዛዝ ይፍጠሩ።',
                   'The money was already refunded - this order cannot be re-opened. Create a new order.')
@@ -2040,7 +2037,10 @@ def inject_globals():
         'current_lang': get_locale(),
         'languages': app.config['LANGUAGES'],
         'now': utcnow(),
+        'prepay_min': PREPAY_MIN,
+        'prepay_max': PREPAY_MAX,
         'site_domain': SITE_DOMAIN,
+        'deposit_percent': DEPOSIT_PERCENT,
         'current_customer': get_current_customer(),
         'map_tiles_url': map_tiles_url,
         'map_attribution': map_attribution,
@@ -2639,21 +2639,21 @@ def ai_help_reply(user_message, settings=None):
         return am_en(
             'ማድረሻ፦ ትዕዛዝ ሲያስገቡ GPS ወይም ካርታ ላይ ቦታዎን ያስቀምጡ።\n'
             'የመድረሻ ሰዓቱን ቡድናችን ከትዕዛዝ በኋላ ያሳውቅዎታል — በጋሪ ገጽ ላይ ያያሉ።\n'
-            'ክፍያ፦ ሁሉም ክፍያ እቃው ሲደርስ ለአጓጓዡ ነው።',
+            f'ከ 100,000 ብር በላይ፦ {DEPOSIT_PERCENT}% አሁን በባንክ፣ የቀረው እቃው ሲደርስ ለአጓጓዡ።',
             'Delivery: set your place with GPS or the map at checkout.\n'
             'Our team confirms the delivery time after you order — you will see it on the Cart page.\n'
-            'Payment: you pay the driver when the goods arrive.'
+            f'Over 100,000 ETB: {DEPOSIT_PERCENT}% by bank now, the rest to the driver on delivery.'
         )
 
     # payment
     if any(k in msg or k in raw for k in ['payment', 'ክፍያ', 'ባንክ', 'bank', 'receipt', 'ደረሰኝ', 'transaction', 'ትራንዛክሽን', 'pay']):
         return am_en(
             'ክፍያ፦\n'
-            '• ምንም ቅድመ ክፍያ የለም። ትዕዛዝ ካስገቡ በኋላ ቡድናችን ዋጋውን (ከማድረሻ ክፍያ ጋር) ያሳውቅዎታል፤ እርስዎ ያረጋግጣሉ።\n'
-            '• እቃው ሲደርስ ለአጓጓዡ በጥሬ ገንዘብ ወይም በባንክ ዝውውር ይከፍላሉ (የባንክ አካውንቱን አጓጓዡ ያሳይዎታል)።',
+            '• 100–100,000 ብር፦ ባንክ ይምረጡ፣ ትራንዛክሽን ID ወይም የደረሰኝ ፎቶ ይላኩ። ቡድናችን ክፍያውን ካረጋገጠ ትዕዛዝዎ ይቀጥላል።\n'
+            f'• ከ 100,000 በላይ፦ {DEPOSIT_PERCENT}% አሁን በባንክ፣ የቀረውን እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ።',
             'Payment:\n'
-            '• No pre-payment. After you order, our team tells you the price (with delivery) and you confirm it.\n'
-            '• You pay the driver when the goods arrive - cash or bank transfer (the driver shows you the account).'
+            '• 100–100,000 ETB: pick a bank, send transaction ID or receipt photo. Once we confirm the payment, your order moves on.\n'
+            f'• Over 100,000 ETB: {DEPOSIT_PERCENT}% by bank now, the rest to the driver on delivery.'
         )
 
     # order status / track
@@ -3108,19 +3108,80 @@ def account():
 
 @app.route('/order/<order_number>/accept-cod', methods=['POST'])
 def accept_cod(order_number):
-    """Customer confirms the total; the money is paid to the transporter when the goods arrive."""
+    """Customer accepts delivery fee for COD orders (over PREPAY_MAX)."""
     order = Order.query.filter_by(order_number=order_number).first_or_404()
     if not _can_view_order(order):
         abort(403)
     if order.payment_status != 'awaiting_customer':
         flash(_('Nothing to confirm on this order'), 'error')
         return redirect(url_for('order_success', order_number=order_number))
-    order.payment_status = 'cod'
-    order.payment_note = tx('ዋጋውን አረጋግጠዋል። እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ።', 'Price confirmed. You pay the transporter when the goods arrive.')
+    order.payment_status = 'not_required'
+    order.payment_note = _('Customer accepted delivery fee — pay on delivery')
     if order.status == 'pending':
         change_order_status(order, 'confirmed', actor='customer', note='COD accepted')
     db.session.commit()
     flash(_('Thank you. Pay when your order is delivered.'), 'success')
+    return redirect(url_for('order_success', order_number=order_number))
+
+
+@app.route('/order/<order_number>/resubmit-payment', methods=['POST'])
+def resubmit_payment(order_number):
+    """Customer uploads / re-uploads receipt after admin requested payment."""
+    order = Order.query.filter_by(order_number=order_number).first_or_404()
+    if not _can_view_order(order):
+        abort(403)
+    if not order.payment_required:
+        flash(_('This order does not require bank payment'), 'error')
+        return redirect(url_for('order_success', order_number=order_number))
+    if order.payment_status not in ('rejected', 'pending'):
+        flash(_('Payment can only be submitted when payment was requested'), 'error')
+        return redirect(url_for('order_success', order_number=order_number))
+    if order.status in ('cancelled', 'delivered'):
+        flash(_('This order is already closed'), 'error')
+        return redirect(url_for('order_success', order_number=order_number))
+
+    transaction_id = ' '.join((request.form.get('transaction_id') or '').split()).upper()[:120]
+    bank_id = safe_int(request.form.get('bank_account_id'), 0)
+    bank = db.session.get(BankAccount, bank_id) if bank_id else None
+    if bank and bank.is_active:
+        order.bank_account_id = bank.id
+        order.bank_name_snapshot = bank.bank_name
+        order.bank_account_name_snapshot = bank.account_name
+        order.bank_account_number_snapshot = bank.account_number
+    upload = request.files.get('receipt')
+    new_path = ''
+    if upload and upload.filename:
+        new_path = save_image(upload, 'receipt', private=True)
+        if not new_path:
+            flash(_('The receipt must be a valid JPG, PNG, GIF or WEBP image'), 'error')
+            return redirect(url_for('order_success', order_number=order_number))
+    if not transaction_id and not new_path and not order.receipt_path:
+        flash(_('Send transaction ID or receipt photo'), 'error')
+        return redirect(url_for('order_success', order_number=order_number))
+    if transaction_id:
+        # duplicate check among other active orders
+        dup = (Order.query.filter(
+            Order.transaction_id == transaction_id,
+            Order.id != order.id,
+            Order.status != 'cancelled',
+            Order.payment_status.in_(['pending', 'confirmed']),
+        ).first())
+        if dup:
+            flash(_('This transaction ID was already used on order %(n)s', n=dup.order_number), 'error')
+            return redirect(url_for('order_success', order_number=order_number))
+        order.transaction_id = transaction_id
+    if new_path:
+        order.receipt_path = new_path
+    order.payment_status = 'pending'
+    order.payment_note = tx('አዲስ የክፍያ ማስረጃ ደርሶናል — ቡድናችን እየተመለከተው ነው።', 'New payment proof received — our team is reviewing it.')
+    try:
+        log_order_change(order, 'payment_status', 'rejected', 'pending', actor='customer', note='resubmit')
+    except Exception:
+        pass
+    admin_notify('payment', f'Payment proof {_short_no(order)}', f'{order.amount_due_now:.0f} ETB to check',
+                 url_for('admin_order_detail', oid=order.id), ref_key=f'pay:{order.id}')
+    db.session.commit()
+    flash(_('Payment proof sent. We will review it shortly.'), 'success')
     return redirect(url_for('order_success', order_number=order_number))
 
 
@@ -3193,10 +3254,7 @@ def transporter_dashboard():
         q = q.filter(Order.status.notin_(['delivered', 'cancelled']))
         show = 'active'
     orders = q.order_by(Order.assigned_at.desc().nullslast(), Order.created_at.desc()).limit(100).all()
-    banks = BankAccount.query.filter_by(is_active=True).order_by(BankAccount.sort_order, BankAccount.id).all()
-    held = (Order.query.filter(Order.transporter_id == t.id, Order.pay_method == 'cash', Order.settled_at.is_(None)).all())
-    return render_template('transporter/dashboard.html', transporter=t, orders=orders, show=show, banks=banks,
-                           held_cash=sum(float(o.cod_amount_collected or 0) for o in held), held_count=len(held))
+    return render_template('transporter/dashboard.html', transporter=t, orders=orders, show=show)
 
 
 @app.route('/transporter/order/<int:oid>')
@@ -3212,7 +3270,6 @@ def transporter_order(oid):
         flash(_('Not assigned to you'), 'error')
         return redirect(url_for('transporter_dashboard'))
     return render_template('transporter/order_detail.html', order=order, transporter=t,
-                           banks=BankAccount.query.filter_by(is_active=True).order_by(BankAccount.sort_order, BankAccount.id).all(),
                            cod_blocked=bool(cod_mismatch(order) and not order.cod_approved),
                            issue_reasons=ISSUE_REASONS)
 
@@ -3235,8 +3292,8 @@ def transporter_order_status(oid):
     if order.status in ('cancelled', 'delivered'):
         flash(_('This order is already closed'), 'error')
         return redirect(url_for('transporter_order', oid=oid))
-    if new_status == 'delivered' and order.cod_expected > 0 and not order.delivery_receipt_at:
-        flash(tx('መጀመሪያ የሰበሰቡትን ክፍያ ያስመዝግቡ።', 'First record the payment you collected.'), 'error')
+    if new_status == 'delivered' and order.total_amount > PREPAY_MAX and order.cod_expected > 0 and not order.delivery_receipt_path:
+        flash(_('Upload COD receipt before marking delivered'), 'error')
         return redirect(url_for('transporter_order', oid=oid))
     if new_status == 'delivered' and cod_mismatch(order) and not order.cod_approved:
         flash(tx('የተሰበሰበው መጠን ከትዕዛዙ ጋር አይመሳሰልም። Admin እስኪያጸድቀው ይጠብቁ።',
@@ -3364,98 +3421,9 @@ def transporter_change_password():
     return render_template('transporter/password.html', transporter=t)
 
 
-def record_delivery_payment(order, actor):
-    """Read the "money collected" form (transporter or admin) and store it on the order.
-    Returns an error text, or None when it worked. The caller commits."""
-    method = (request.form.get('pay_method') or '').strip()
-    if method not in ('cash', 'transfer'):
-        return tx('ክፍያው በጥሬ ገንዘብ ወይም በባንክ ዝውውር መሆኑን ይምረጡ።', 'Please choose: cash or bank transfer.')
-    amt = safe_float((request.form.get('amount_collected') or '').strip(), None)
-    if amt is None or not math.isfinite(amt) or amt <= 0 or amt > 1e10:
-        return tx('የተሰበሰበውን ትክክለኛ መጠን ያስገቡ።', 'Enter the amount collected.')
-    bank_id = None
-    txn = ''
-    if method == 'transfer':
-        txn = ' '.join((request.form.get('transaction_id') or '').split())[:80]
-        if len(txn) < 4:
-            return tx('የባንክ ዝውውሩን transaction ቁጥር ያስገቡ።', 'Enter the transaction number of the bank transfer.')
-        if Order.query.filter(func.lower(Order.transaction_id) == txn.lower(), Order.id != order.id).first():
-            return tx('ይህ transaction ቁጥር ቀደም ሲል ለሌላ ትዕዛዝ ጥቅም ላይ ውሏል።', 'This transaction number was already used on another order.')
-        bank = db.session.get(BankAccount, safe_int(request.form.get('bank_id'), 0))
-        if not bank or not bank.is_active:
-            return tx('ገንዘቡ የገባበትን የሱቁን የባንክ አካውንት ይምረጡ።', 'Choose the shop bank account the money was paid into.')
-        bank_id = bank.id
-    path_saved = ''
-    photo = request.files.get('receipt')
-    if photo and photo.filename:
-        path_saved = save_image(photo, 'pay_proof', private=True)
-        if not path_saved:
-            return tx('ፎቶው አልተቀመጠም። JPG፣ PNG ወይም WEBP ይጠቀሙ።', 'Could not save the photo. Use a JPG, PNG or WEBP picture.')
-    expected = float(order.cod_expected or 0) or float(order.total_amount or 0)
-    note_extra = ''
-    if expected > 0 and abs(amt - expected) > max(1.0, expected * 0.02):
-        note_extra = f' [Amount differs: collected {amt:.0f} vs expected {expected:.0f}]'
-    note = ' '.join((request.form.get('note') or '').split())[:180]
-    order.pay_method = method
-    order.pay_bank_id = bank_id
-    if method == 'transfer':
-        order.transaction_id = txn
-    if path_saved:
-        order.delivery_receipt_path = path_saved
-    order.cod_amount_collected = amt
-    order.delivery_receipt_note = (note + note_extra).strip()[:255]
-    order.delivery_receipt_at = utcnow()
-    order.cod_approved = False
-    order.settled_at = None
-    order.settled_note = ''
-    log_order_change(order, 'payment_collected', '', f'{method} {amt:.0f}', actor=actor,
-                     note=(txn or note_extra.strip() or 'recorded'))
-    return None
-
-
-def settle_order(order, bank_id=None, note='', actor=''):
-    """The admin received the money of this order (cash from the transporter / transfer seen in the bank)."""
-    if not order.pay_method:
-        return tx('ክፍያ ገና አልተመዘገበም።', 'No payment has been recorded for this order yet.')
-    if order.settled_at:
-        return tx('ይህ ቀድሞ ተመዝግቧል።', 'Already marked as received.')
-    bank = None
-    if order.pay_method == 'transfer':
-        bank = db.session.get(BankAccount, safe_int(bank_id, 0) or order.pay_bank_id or 0)
-        if not bank:
-            return tx('የባንክ አካውንት ይምረጡ።', 'Choose the bank account.')
-        order.pay_bank_id = bank.id
-    order.settled_at = utcnow()
-    order.settled_note = (note or '')[:120]
-    if bank:
-        amount = float(order.cod_amount_collected or order.total_amount or 0)
-        row = BankTransaction.query.filter_by(order_id=order.id, kind='payment', voided=False).first()
-        label = f'{bank.bank_name} {bank.account_number}'[:200]
-        if row:
-            row.bank_id, row.bank_label, row.amount = bank.id, label, amount
-        else:
-            db.session.add(BankTransaction(
-                bank_id=bank.id, bank_label=label, order_id=order.id, order_number=order.order_number, kind='payment',
-                amount=amount, reference=(order.transaction_id or '')[:120],
-                note='paid on delivery (bank transfer)', actor=(actor or '')[:80]))
-    log_order_change(order, 'settled', '', order.pay_method, actor=actor, note=note or '')
-    return None
-
-
-def unsettle_order(order, actor=''):
-    if not order.settled_at:
-        return
-    order.settled_at = None
-    order.settled_note = ''
-    for r in BankTransaction.query.filter_by(order_id=order.id, kind='payment', voided=False).all():
-        r.voided = True
-        r.note = ((r.note or '') + ' [un-marked]')[:255]
-    log_order_change(order, 'settled', order.pay_method or '', 'undone', actor=actor, note='')
-
-
 @app.route('/transporter/order/<int:oid>/delivery-receipt', methods=['POST'])
 def transporter_delivery_receipt(oid):
-    """Transporter records the money collected at the door: cash, or a bank transfer to the shop's account."""
+    """For COD orders (>100,000 ETB): transporter uploads receipt after delivery."""
     t = get_current_transporter()
     if not t:
         return redirect(url_for('transporter_login'))
@@ -3465,35 +3433,57 @@ def transporter_delivery_receipt(oid):
     order = db.get_or_404(Order, oid)
     if order.transporter_id != t.id:
         abort(403)
-    back = redirect(url_for('transporter_order', oid=oid))
+    if order.total_amount <= PREPAY_MAX:
+        flash(_('Receipt upload is only for orders over 100,000 ETB'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
     if order.status in ('cancelled', 'delivered'):
-        flash(_('This order is already closed'), 'error')
-        return back
+        flash(_('This order is already closed — receipt cannot be changed'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    # COD receipt only when already out for delivery (avoids stuck photo + failed status)
     if order.status != 'out_for_delivery':
-        flash(tx('መጀመሪያ ትዕዛዙን "በመንገድ ላይ" ያድርጉ።', 'First mark the order "out for delivery".'), 'error')
-        return back
-    if order.cod_expected <= 0:
-        flash(tx('ለዚህ ትዕዛዝ የሚሰበሰብ ገንዘብ የለም (ቀድሞ ተከፍሏል)።', 'Nothing to collect on this order (already paid).'), 'error')
-        return back
-    if order.delivery_receipt_at:
-        flash(tx('ክፍያው ቀድሞ ተመዝግቧል። ለመቀየር Admin ያነጋግሩ።', 'The payment was already recorded. Contact the admin to change it.'), 'error')
-        return back
-    err = record_delivery_payment(order, f'transporter:{(t.phone or t.name or str(t.id))}')
-    if err:
-        db.session.rollback()
-        flash(err, 'error')
-        return back
-    if cod_mismatch(order):
-        admin_notify('issue', f'Amount differs {_short_no(order)}',
-                     f'Collected {order.cod_amount_collected:.0f} vs expected {order.cod_expected:.0f} ETB',
-                     url_for('admin_order_detail', oid=order.id), ref_key=f'issue:{order.id}')
+        flash(_('Mark the order out for delivery before uploading the COD receipt'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    if order.delivery_receipt_path:
+        flash(_('A receipt was already uploaded. Contact admin to change it.'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    if 'receipt' not in request.files or not request.files['receipt'].filename:
+        flash(_('Please choose a receipt photo'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    raw_amt = (request.form.get('amount_collected') or '').strip()
+    if not raw_amt:
+        flash(_('Please enter the amount collected'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    amt = safe_float(raw_amt, None)
+    if amt is None or not math.isfinite(amt) or amt <= 0 or amt > 1e10:
+        flash(_('Please enter a valid amount collected'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    expected = float(order.cod_expected or 0) or float(order.total_amount or 0)
+    note_extra = ''
+    if expected > 0 and abs(amt - expected) > max(1.0, expected * 0.02):
+        # Allow shortfall/overage but flag clearly for admin
+        note_extra = f' [Amount differs: collected {amt:.0f} vs order {expected:.0f}]'
+    path_saved = save_image(request.files['receipt'], 'cod_receipt', private=True)
+    if not path_saved:
+        flash(_('Could not save receipt. Use a JPG, PNG, GIF or WEBP photo.'), 'error')
+        return redirect(url_for('transporter_order', oid=oid))
+    # Save receipt only — do NOT auto-mark delivered (admin reviews amount / photo)
+    order.delivery_receipt_path = path_saved
+    note = (request.form.get('note', '') or '').strip()[:200]
+    order.delivery_receipt_note = (note + note_extra).strip()[:255]
+    order.cod_amount_collected = amt
+    order.delivery_receipt_at = utcnow()
+    try:
+        log_order_change(order, 'cod_receipt', '', f'collected={amt:.0f}', actor=f'transporter:{(t.phone or t.name or str(t.id))}', note=note_extra or 'COD receipt uploaded')
+    except Exception:
+        pass
     db.session.commit()
-    if cod_mismatch(order):
-        flash(tx('ክፍያው ተመዝግቧል። መጠኑ ከሚጠበቀው ይለያል፤ Admin እስኪያጸድቀው ይጠብቁ።',
-                 'Payment recorded. The amount differs from expected - wait for the admin to approve it.'), 'success')
+    if note_extra:
+        order.cod_approved = False
+        db.session.commit()
+        flash(_('Receipt sent. Amount differs from total — admin will review. Then mark delivered.'), 'success')
     else:
-        flash(tx('ክፍያው ተመዝግቧል ✓ አሁን "ደርሷል" ማለት ይችላሉ።', 'Payment recorded ✓ You can now mark it delivered.'), 'success')
-    return back
+        flash(_('Receipt sent to admin ✓ You can now mark delivered.'), 'success')
+    return redirect(url_for('transporter_order', oid=oid))
 
 
 # ---------------------------------------------------------------------------
@@ -3640,8 +3630,9 @@ def admin_dashboard():
                                          Order.delivery_receipt_path.isnot(None),
                                          Order.delivery_receipt_path != '',
                                          Order.cod_approved == False).count(),
-        'payments_to_check': Order.query.filter(Order.pay_method.in_(['cash', 'transfer']),
-                                                Order.settled_at.is_(None)).count(),
+        'payments_to_check': Order.query.filter(Order.payment_required == True,
+                                                Order.payment_status == 'pending',
+                                                Order.status.notin_(['delivered', 'cancelled'])).count(),
         'awaiting_quote': Order.query.filter(Order.payment_status == 'awaiting_quote',
                                              Order.status == 'pending').count(),
         'merchant_requests': VendorApplication.query.filter_by(status='new').count(),
@@ -3951,53 +3942,6 @@ def admin_bank_ledger_export():
     resp.headers['Content-Disposition'] = f'attachment; filename=bank_ledger_{utcnow().strftime("%Y%m%d_%H%M")}.csv'
     resp.headers['Cache-Control'] = 'private, no-store'
     return resp
-
-
-@app.route('/admin/settlements', methods=['GET', 'POST'])
-@admin_required
-def admin_settlements():
-    """Money the transporters collected at the door: cash to receive from them, transfers to check in the bank."""
-    if request.method == 'POST':
-        action = request.form.get('action', '')
-        if action == 'settle':
-            order = db.session.get(Order, safe_int(request.form.get('id'), 0))
-            err = settle_order(order, request.form.get('bank_id'), (request.form.get('note') or '').strip(), admin_actor()) if order else 'Not found'
-            if err:
-                flash(err, 'error')
-            else:
-                audit('money_received', f'{order.order_number}: {order.pay_method} {order.cod_amount_collected or 0:.0f}')
-                db.session.commit()
-                flash(tx('ተመዝግቧል ✓', 'Marked as received ✓'), 'success')
-        elif action == 'settle_cash_all':
-            tid = safe_int(request.form.get('transporter_id'), 0)
-            rows = Order.query.filter(Order.transporter_id == tid, Order.pay_method == 'cash', Order.settled_at.is_(None)).all()
-            total = 0.0
-            for o in rows:
-                if not settle_order(o, None, 'cash handed over', admin_actor()):
-                    total += float(o.cod_amount_collected or 0)
-            audit('money_received_bulk', f'transporter #{tid}: {len(rows)} orders, {total:.0f} ETB cash')
-            db.session.commit()
-            flash(tx(f'{len(rows)} ትዕዛዝ ({total:,.0f} ብር) ተመዝግቧል ✓', f'{len(rows)} order(s), {total:,.0f} ETB cash marked as received ✓'), 'success')
-        elif action == 'unsettle':
-            order = db.session.get(Order, safe_int(request.form.get('id'), 0))
-            if order:
-                unsettle_order(order, admin_actor())
-                audit('money_received_undone', order.order_number)
-                db.session.commit()
-                flash(tx('ተሰርዟል።', 'Undone.'), 'success')
-        return redirect(url_for('admin_settlements'))
-    waiting = (Order.query.filter(Order.pay_method.in_(['cash', 'transfer']), Order.settled_at.is_(None))
-               .order_by(Order.delivery_receipt_at).all())
-    groups = {}
-    for o in waiting:
-        g_ = groups.setdefault(o.transporter_id, {'t': db.session.get(Transporter, o.transporter_id) if o.transporter_id else None,
-                                                  'cash': [], 'transfer': [], 'cash_total': 0.0, 'transfer_total': 0.0})
-        g_[o.pay_method].append(o)
-        g_[o.pay_method + '_total'] += float(o.cod_amount_collected or 0)
-    recent = (Order.query.filter(Order.settled_at.isnot(None)).order_by(Order.settled_at.desc()).limit(25).all())
-    banks = BankAccount.query.order_by(BankAccount.sort_order, BankAccount.id).all()
-    return render_template('admin/settlements.html', groups=list(groups.values()), recent=recent, banks=banks,
-                           transporters={t_.id: t_ for t_ in Transporter.query.all()})
 
 
 @app.route('/admin/audit')
@@ -4664,7 +4608,7 @@ def admin_orders():
                 order.items_subtotal = items
             if abs(fee - float(order.delivery_fee or 0)) > 0.005:
                 if fee_locked(order):
-                    flash(f'{order.order_number}: ' + fee_lock_message(), 'error')
+                    flash(f'{order.order_number}: ' + tx('ክፍያ ከተፈጸመ/ከተረጋገጠ ወይም ትዕዛዙ ከተላከ በኋላ የማድረሻ ክፍያ መቀየር አይቻልም። መጀመሪያ ክፍያውን ውድቅ ያድርጉ ወይም ትዕዛዙን ይሰርዙ።', 'The delivery fee cannot be changed after payment was sent/confirmed or the order was dispatched. Reject the payment or cancel the order first.'), 'error')
                 else:
                     order.delivery_fee = fee
                     order.total_amount = items + fee
@@ -4707,16 +4651,33 @@ def admin_orders():
                     order.assigned_at = None
             # optional: request payment for this order
             if request.form.get(f'request_pay_{oid}') and fee_locked(order):
-                flash(f'{order.order_number}: ' + fee_lock_message(), 'error')
+                flash(f'{order.order_number}: ' + tx('ክፍያ ከተፈጸመ/ከተረጋገጠ ወይም ትዕዛዙ ከተላከ በኋላ የማድረሻ ክፍያ መቀየር አይቻልም። መጀመሪያ ክፍያውን ውድቅ ያድርጉ ወይም ትዕዛዙን ይሰርዙ።', 'The delivery fee cannot be changed after payment was sent/confirmed or the order was dispatched. Reject the payment or cancel the order first.'), 'error')
             elif request.form.get(f'request_pay_{oid}'):
                 grand = float(order.total_amount or 0)
                 order.deposit_amount = 0.0
-                order.payment_required = False
-                order.payment_status = 'awaiting_customer'
-                order.payment_note = tx(
-                    f'ጠቅላላ {grand:.0f} ብር። እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ። እባክዎ ያረጋግጡ።',
-                    f'Total {grand:.0f} ETB. You pay the transporter when the goods arrive. Please confirm.')
-                order_sms(order, 'cod_notice')
+                if grand < PREPAY_MIN:
+                    order.payment_required = False
+                    order.payment_status = 'not_required'
+                    order.payment_note = _('No bank payment required')
+                    if order.status == 'pending':
+                        change_order_status(order, 'confirmed', actor='admin', note='small order')
+                elif grand <= PREPAY_MAX:
+                    order.payment_required = True
+                    order.payment_status = 'pending'
+                    order.payment_note = _(
+                        'Please pay %(t)s ETB (items + delivery). Upload receipt or transaction ID.',
+                        t=f'{grand:.0f}'
+                    )
+                    order_sms(order, 'pay_request')
+                else:
+                    deposit = float(math.ceil(grand * DEPOSIT_PERCENT / 100.0))
+                    order.deposit_amount = deposit
+                    order.payment_required = True
+                    order.payment_status = 'pending'
+                    order.payment_note = tx(
+                        f'ጠቅላላ {grand:.0f} ብር። አሁን {deposit:.0f} ብር ({DEPOSIT_PERCENT}%) በባንክ ይክፈሉ፤ የቀረውን {grand - deposit:.0f} ብር እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ። ደረሰኝ ወይም transaction ID ይላኩ።',
+                        f'Total {grand:.0f} ETB. Pay {deposit:.0f} ETB ({DEPOSIT_PERCENT}%) by bank now; the remaining {grand - deposit:.0f} ETB is paid to the transporter on delivery. Send the receipt or transaction ID.')
+                    order_sms(order, 'deposit_request')
             updated += 1
         db.session.commit()
         flash(_('Saved %(n)s order(s)', n=updated), 'success')
@@ -4752,8 +4713,9 @@ def _orders_query(status='', q='', flag=''):
                              Order.status.notin_(['delivered', 'cancelled']))
     elif flag == 'refund':
         query = query.filter(Order.refund_status == 'due')
-    elif flag in ('payment', 'settle'):
-        query = query.filter(Order.pay_method.in_(['cash', 'transfer']), Order.settled_at.is_(None))
+    elif flag == 'payment':
+        query = query.filter(Order.payment_required == True, Order.payment_status == 'pending',
+                             Order.status.notin_(['delivered', 'cancelled']))
     if q:
         like = f'%{q}%'
         query = query.filter(or_(
@@ -4824,7 +4786,7 @@ def admin_order_detail(oid):
                 flash(_('Cannot change delivery fee on a closed order'), 'error')
                 return back
             if fee_locked(order):
-                flash(fee_lock_message(), 'error')
+                flash(tx('ክፍያ ከተፈጸመ/ከተረጋገጠ ወይም ትዕዛዙ ከተላከ በኋላ የማድረሻ ክፍያ መቀየር አይቻልም። መጀመሪያ ክፍያውን ውድቅ ያድርጉ ወይም ትዕዛዙን ይሰርዙ።', 'The delivery fee cannot be changed after payment was sent/confirmed or the order was dispatched. Reject the payment or cancel the order first.'), 'error')
                 return back
             fee = form_float('delivery_fee', 0.0, 0.0, 1e7)
             items = float(order.items_subtotal or 0)
@@ -4847,7 +4809,7 @@ def admin_order_detail(oid):
                 return back
             fee = form_float('delivery_fee', float(order.delivery_fee or 0), 0.0, 1e7)
             if fee_locked(order):
-                flash(fee_lock_message(), 'error')
+                flash(tx('ክፍያ ከተፈጸመ/ከተረጋገጠ ወይም ትዕዛዙ ከተላከ በኋላ የማድረሻ ክፍያ መቀየር አይቻልም። መጀመሪያ ክፍያውን ውድቅ ያድርጉ ወይም ትዕዛዙን ይሰርዙ።', 'The delivery fee cannot be changed after payment was sent/confirmed or the order was dispatched. Reject the payment or cancel the order first.'), 'error')
                 return back
             items = float(order.items_subtotal or 0)
             if items <= 0:
@@ -4857,15 +4819,34 @@ def admin_order_detail(oid):
             order.total_amount = items + fee
             grand = order.total_amount
             order.deposit_amount = 0.0
-            order.payment_required = False
-            order.payment_status = 'awaiting_customer'
-            order.payment_note = tx(
-                f'ጠቅላላ {grand:.0f} ብር (እቃ {items:.0f} + ማድረሻ {fee:.0f})። እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ። እባክዎ ያረጋግጡ።',
-                f'Total {grand:.0f} ETB (items {items:.0f} + delivery {fee:.0f}). You pay the transporter when the goods arrive. Please confirm.')
-            order_sms(order, 'cod_notice')
+            if grand < PREPAY_MIN:
+                # Small order — no bank deposit; mark ready
+                order.payment_required = False
+                order.payment_status = 'not_required'
+                order.payment_note = _('No bank payment required (under %(n)s ETB). Ready to process.', n=PREPAY_MIN)
+                if order.status == 'pending':
+                    change_order_status(order, 'confirmed', actor='admin', note='small order auto-confirm')
+            elif grand <= PREPAY_MAX:
+                order.payment_required = True
+                order.payment_status = 'pending'
+                order.payment_note = _(
+                    'Please pay %(t)s ETB by bank (items %(i)s + delivery %(d)s). Upload receipt or transaction ID.',
+                    t=f'{grand:.0f}', i=f'{items:.0f}', d=f'{fee:.0f}'
+                )
+                order_sms(order, 'pay_request')
+            else:
+                # Over 100,000: DEPOSIT_PERCENT by bank now, the rest in cash to the transporter
+                deposit = float(math.ceil(grand * DEPOSIT_PERCENT / 100.0))
+                order.deposit_amount = deposit
+                order.payment_required = True
+                order.payment_status = 'pending'
+                order.payment_note = tx(
+                    f'ጠቅላላ {grand:.0f} ብር። አሁን {deposit:.0f} ብር ({DEPOSIT_PERCENT}%) በባንክ ይክፈሉ፤ የቀረውን {grand - deposit:.0f} ብር እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ። ደረሰኝ ወይም transaction ID ይላኩ።',
+                    f'Total {grand:.0f} ETB. Pay {deposit:.0f} ETB ({DEPOSIT_PERCENT}%) by bank now; the remaining {grand - deposit:.0f} ETB is paid to the transporter on delivery. Send the receipt or transaction ID.')
+                order_sms(order, 'deposit_request')
             log_order_change(order, 'payment_status', None, order.payment_status, actor='admin', note='request payment / customer notice')
             db.session.commit()
-            flash(tx('ዋጋው ለደንበኛው ተልኳል። እስኪያረጋግጥ ይጠብቁ።', 'Price sent to the customer. Wait for them to confirm.'), 'success')
+            flash(_('Customer payment request sent'), 'success')
             return back
 
         if action == 'assign':
@@ -4965,61 +4946,9 @@ def admin_order_detail(oid):
             db.session.commit()
             flash(tx('ተመላሽ ገንዘብ ተመዝግቧል።', 'Refund recorded.'), 'success')
             return back
-        if action == 'customer_agreed':
-            if order.payment_status != 'awaiting_customer':
-                flash(tx('ደንበኛው ዋጋውን እንዲያረጋግጥ አልተጠየቀም።', 'The customer was not asked to confirm a price.'), 'error')
-                return back
-            order.payment_status = 'cod'
-            order.payment_note = tx('ደንበኛው በስልክ አረጋግጧል። እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ።', 'Confirmed by phone. You pay the transporter when the goods arrive.')
-            log_order_change(order, 'payment_status', 'awaiting_customer', 'cod', actor=admin_actor(), note='customer agreed by phone')
-            if order.status == 'pending':
-                change_order_status(order, 'confirmed', actor=admin_actor(), note='customer agreed by phone')
-            audit('customer_agreed', order.order_number)
-            db.session.commit()
-            flash(tx('ተመዝግቧል። አሁን አጓጓዥ መመደብ ይችላሉ።', 'Saved. You can now assign a transporter.'), 'success')
-            return back
-        if action == 'reopen_price':
-            if order.status not in ('pending', 'confirmed', 'preparing') or order.payment_status not in ('cod', 'awaiting_customer'):
-                flash(tx('አሁን ዋጋውን እንደገና መክፈት አይቻልም።', 'The price cannot be re-opened now.'), 'error')
-                return back
-            order.payment_status = 'awaiting_quote'
-            order.payment_note = tx('ዋጋው እየተስተካከለ ነው።', 'The price is being updated.')
-            log_order_change(order, 'payment_status', 'cod', 'awaiting_quote', actor=admin_actor(), note='price re-opened')
-            audit('price_reopened', order.order_number)
-            db.session.commit()
-            flash(tx('አሁን የማድረሻ ክፍያውን መቀየር እና ለደንበኛው እንደገና መላክ ይችላሉ።', 'You can now change the delivery fee and send it to the customer again.'), 'success')
-            return back
-        if action == 'record_payment':
-            if order.status not in ('out_for_delivery', 'delivered') or order.cod_expected <= 0 or order.delivery_receipt_at:
-                flash(tx('ክፍያ አሁን መመዝገብ አይቻልም።', 'A payment cannot be recorded now.'), 'error')
-                return back
-            err = record_delivery_payment(order, admin_actor())
-            if err:
-                db.session.rollback()
-                flash(err, 'error')
-                return back
-            order.cod_approved = True
-            audit('payment_recorded', f'{order.order_number}: {order.pay_method} {order.cod_amount_collected:.0f}')
-            db.session.commit()
-            flash(tx('ክፍያው ተመዝግቧል።', 'Payment recorded.'), 'success')
-            return back
-        if action in ('settle', 'unsettle'):
-            if action == 'settle':
-                err = settle_order(order, request.form.get('bank_id'), (request.form.get('note') or '').strip(), admin_actor())
-                if err:
-                    flash(err, 'error')
-                    return back
-                audit('money_received', f'{order.order_number}: {order.pay_method} {order.cod_amount_collected or 0:.0f}')
-                flash(tx('ገንዘቡ እንደደረስዎ ተመዝግቧል ✓', 'Marked as received ✓'), 'success')
-            else:
-                unsettle_order(order, admin_actor())
-                audit('money_received_undone', order.order_number)
-                flash(tx('ተሰርዟል።', 'Undone.'), 'success')
-            db.session.commit()
-            return back
         if action == 'cod_approve':
-            if not order.delivery_receipt_at:
-                flash(tx('ክፍያ አልተመዘገበም።', 'No payment has been recorded.'), 'error')
+            if not order.delivery_receipt_path:
+                flash(tx('ደረሰኝ አልተጫነም።', 'No COD receipt uploaded.'), 'error')
                 return back
             order.cod_approved = True
             log_order_change(order, 'cod_receipt', 'review', 'approved', actor=admin_actor(),
@@ -5029,13 +4958,9 @@ def admin_order_detail(oid):
             flash(tx('የ COD ደረሰኝ ጸድቋል፤ አጓጓዡ ማድረሱን ማመልከት ይችላል።', 'COD receipt approved. The transporter can now mark it delivered.'), 'success')
             return back
         if action == 'cod_reset':
-            if order.status == 'delivered' and order.settled_at:
-                flash(tx('ገንዘቡ ደርሷል ተብሎ ተመዝግቧል። መጀመሪያ ያንን ይሰርዙ።', 'The money is already marked as received. Undo that first.'), 'error')
+            if order.status == 'delivered':
+                flash(_('This order is already closed'), 'error')
                 return back
-            if order.pay_method == 'transfer':
-                order.transaction_id = ''
-            order.pay_method = ''
-            order.pay_bank_id = None
             delete_stored_file(order.delivery_receipt_path)
             order.delivery_receipt_path = ''
             order.cod_amount_collected = None
@@ -5084,8 +5009,7 @@ def admin_order_detail(oid):
                 flash(_('Order status updated'), 'success')
         return back
     logs = StatusLog.query.filter_by(order_id=order.id).order_by(StatusLog.created_at.desc()).limit(50).all()
-    return render_template('admin/order_detail.html', order=order, bank=bank, transporters=transporters, assigned=assigned, status_logs=logs,
-                           banks=BankAccount.query.order_by(BankAccount.sort_order, BankAccount.id).all())
+    return render_template('admin/order_detail.html', order=order, bank=bank, transporters=transporters, assigned=assigned, status_logs=logs)
 
 
 @app.route('/admin/banks', methods=['GET', 'POST'])
@@ -5451,28 +5375,6 @@ def _migrate_private_files():
         db.session.commit()
 
 
-def _migrate_to_cod_flow():
-    """Orders that are still open when the pay-on-delivery rule starts follow the new rule.
-    (Delivered / cancelled orders and orders with a receipt waiting for review are left exactly as they were.)"""
-    open_orders = Order.query.filter(Order.status.notin_(['delivered', 'cancelled']))
-    n = 0
-    for o in open_orders.filter(Order.payment_required == True, Order.payment_status.in_(['pending', 'rejected'])).all():
-        if o.receipt_path or o.transaction_id:
-            continue
-        o.payment_required = False
-        o.deposit_amount = 0.0
-        o.payment_status = 'awaiting_customer'
-        o.payment_note = ('ክፍያ አሁን በእቃ ማድረሻ ጊዜ ነው። ጠቅላላ ' + f'{float(o.total_amount or 0):.0f}' +
-                          ' ብር ለአጓጓዡ ይከፈላል፤ እባክዎ ያረጋግጡ። / Payment is now on delivery - please confirm.')
-        n += 1
-    for o in open_orders.filter(Order.payment_status == 'not_required').all():
-        o.payment_status = 'cod'
-        n += 1
-    if n:
-        db.session.commit()
-        print(f'Moved {n} open order(s) to the pay-on-delivery rule.')
-
-
 def _rename_brand_in_settings():
     """Dado Delivery -> Afta Delivery for an existing database.
     Only values that still hold the OLD DEFAULT text are replaced; anything the admin typed is left alone."""
@@ -5568,10 +5470,6 @@ def init_db():
                 ('order', 'cod_approved', 'BOOLEAN DEFAULT FALSE'),
                 ('order', 'deposit_amount', 'FLOAT DEFAULT 0'),
                 ('order', 'idem_key', 'VARCHAR(64)'),
-                ('order', 'pay_method', "VARCHAR(12) DEFAULT ''"),
-                ('order', 'pay_bank_id', 'INTEGER'),
-                ('order', 'settled_at', ts),
-                ('order', 'settled_note', "VARCHAR(120) DEFAULT ''"),
                 ('product', 'vendor_id', 'INTEGER'),
                 ('order_item', 'vendor_id', 'INTEGER'),
                 ('order_item', 'commission_percent', 'FLOAT DEFAULT 0'),
@@ -5619,12 +5517,6 @@ def init_db():
             settings = SiteSettings()
             db.session.add(settings)
             db.session.commit()
-
-        try:
-            _migrate_to_cod_flow()
-        except Exception as e:
-            db.session.rollback()
-            print('cod migrate note:', e)
 
         # all column migrations are done by now: Dado -> Afta names stored in an old database
         try:

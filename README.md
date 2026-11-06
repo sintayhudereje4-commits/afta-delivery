@@ -66,24 +66,27 @@ Open: http://127.0.0.1:5000
 2. **Admin → Settings:** change the admin password.
 3. **Admin → Transporters:** add your riders (if you leave the password empty a temporary one is shown once).
 
-## Order and payment flow (pay when the goods arrive)
+## Order and payment flow (how it really works)
 
-There is **no pre-payment**. Every order is paid to the transporter at the door.
+1. The customer places the order (guest or logged in). Stock is reserved. The delivery fee is **not** known yet.
+2. The admin sets the delivery fee and presses *Request payment*:
+   - total **100 – 100,000 ETB** → customer pays by bank and uploads a receipt / transaction ID; the admin confirms
+     (confirmation needs a receipt or transaction ID);
+   - total **over 100,000 ETB** → the customer pays `DEPOSIT_PERCENT` (default **50%**) by bank now (receipt / transaction ID,
+     confirmed by the admin); the **rest is collected in cash by the transporter** on delivery, who uploads a receipt for that amount;
+   - total **under 100 ETB** → no payment step.
+3. After payment is confirmed (or COD accepted) the admin assigns a transporter. The customer gets an SMS with a
+   **4-digit delivery code**; the transporter must enter it to mark the order delivered.
+4. The limits are the constants `PREPAY_MIN` / `PREPAY_MAX` at the top of `app.py`.
 
-1. The customer (logged in) places the order. Stock is reserved. The delivery fee is not known yet.
-2. The admin sets the delivery fee and presses **Send the price to the customer** (SMS goes out).
-3. The customer confirms the total on the order page (or the admin ticks "customer agreed by phone"). To change a price later the
-   admin presses **Change the price - ask the customer again**.
-4. The admin assigns a transporter. The customer gets an SMS with a 4-digit **delivery code**.
-5. At the door the transporter collects the money - **cash** or a **bank transfer to one of the shop's accounts** (the accounts the admin
-   keeps under *Bank accounts* are shown on the transporter's pages with a Copy button) - records it (method, amount, transaction
-   number + account for transfers, optional photo) and enters the customer's delivery code to mark the order delivered.
-6. The admin sees the money under **Collected money**: cash is ticked *received* when the transporter hands it over; a transfer is ticked
-   *arrived in the bank* once seen on the bank statement - it is then added to **Bank money**. If the collected amount differs from the
-   expected one, the admin must approve it first.
-
-Orders that were open when this rule started are moved to it automatically (orders with a receipt waiting for review stay as they were).
-Old, already paid orders keep their history and are not collected again.
+### Safety rules built in
+- The delivery fee/total can no longer be changed once payment was sent/confirmed or the order is on its way.
+- Orders that were never quoted (`QUOTE_TIMEOUT_HOURS`, default 72) or unpaid without proof (48 h) are cancelled
+  automatically and their stock released. An order with a receipt/transaction ID is never auto-cancelled.
+- Max `MAX_OPEN_ORDERS_PER_PHONE` (default 3) unfinished orders per phone number.
+- Cancelling an order whose bank payment was confirmed marks a **refund due**; the admin records the refund.
+- A COD receipt whose amount differs from the total must be approved by the admin before the transporter can finish.
+- Guest orders are linked to an account only from the same browser, or by phone number only when the phone was verified by SMS.
 
 ## Optional settings added in this version
 | Variable | Meaning | Default |
@@ -94,6 +97,7 @@ Old, already paid orders keep their history and are not collected again.
 | `MAX_OPEN_ORDERS_PER_PHONE` | unfinished orders allowed per phone | 3 |
 | `QUOTE_TIMEOUT_HOURS` | auto-cancel never-quoted / unaccepted orders after | 72 |
 | `LOW_STOCK_THRESHOLD` | dashboard low-stock warning | 10 |
+| `DEPOSIT_PERCENT` | share of an order over 100,000 ETB paid by bank up-front (10–90) | 50 |
 | `FILES_IN_DB` | keep uploaded files in the database | on for PostgreSQL |
 
 Admin panel additions: sales figures and low stock on the dashboard, order filters + pagination + CSV export, refund
@@ -199,7 +203,8 @@ On **Render free**, the filesystem is **ephemeral** — redeploys wipe local fil
 Use **PostgreSQL** (`DATABASE_URL`) and external object storage for receipts/images in production.
 
 ## Bank ledger ("Money received")
-Admin → *Bank money* lists every bank transfer you confirmed under *Collected money* (per bank account), subtracts recorded refunds, and lets you add other deposits/payments by hand. Totals per bank (today / this month /
+Admin → *Money received* lists every confirmed bank payment (automatically, per bank account; for big orders only the
+deposit), subtracts recorded refunds, and lets you add other deposits/payments by hand. Totals per bank (today / this month /
 all time), filters by bank, type and date, and CSV export. The balance shown is the sum of the entries, not your real bank balance.
 
 ## Interrupted checkout

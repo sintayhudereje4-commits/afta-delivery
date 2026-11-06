@@ -59,11 +59,17 @@
             </p>
             <p>
                 <strong>Payment:</strong>
-                {% if order.cod_expected > 0 %}
-                    <span class="unpaid">COLLECT <strong>{{ '%.0f'|format(order.cod_expected) }} ብር</strong> from the customer when you hand over the goods / ገንዘብ ይሰብስቡ</span>
-                    {% if order.delivery_receipt_at %}<br><span class="paid">✓ Payment recorded ({{ order.pay_method }})</span>{% endif %}
+                {% if order.total_amount > prepay_max and order.has_deposit %}
+                    <span class="paid">Deposit {{ '%.0f'|format(order.deposit_amount) }} ብር paid by bank ✓</span><br>
+                    <span class="unpaid">Collect <strong>{{ '%.0f'|format(order.cod_expected) }} ብር CASH</strong> on delivery / {{ '%.0f'|format(order.cod_expected) }} ብር ይሰብስቡ</span>
+                {% elif order.total_amount > prepay_max %}
+                    <span class="unpaid">NOT prepaid — collect {{ '%.0f'|format(order.total_amount) }} ብር on delivery</span>
+                {% elif order.payment_required and order.payment_status == 'confirmed' %}
+                    <span class="paid">PAID (bank confirmed) — do not collect</span>
+                {% elif order.payment_required %}
+                    <span class="unpaid">Bank payment: {{ order.payment_status }}</span>
                 {% else %}
-                    <span class="paid">Already paid — do not collect / ቀድሞ ተከፍሏል</span>
+                    <span class="paid">No cash to collect (order under {{ prepay_min }} ብር) — deliver only / ገንዘብ አይሰበስቡ</span>
                 {% endif %}
             </p>
             <p><strong>Items:</strong> {{ '%.0f'|format(order.items_subtotal if order.items_subtotal is not none else order.total_amount) }} ብር</p>
@@ -140,14 +146,14 @@
                 </div>
                 {% endif %}
                 <button class="btn btn-green" type="submit" name="status" value="delivered"
-                    {% if (order.cod_expected > 0 and not order.delivery_receipt_at) or cod_blocked %}disabled title="Record the collected payment / wait for admin approval first"{% endif %}>
+                    {% if (order.total_amount > prepay_max and not order.delivery_receipt_path) or cod_blocked %}disabled title="Upload COD receipt / wait for admin approval first"{% endif %}>
                     Mark delivered / ደርሷል
                 </button>
                 {% if cod_blocked %}
-                <p style="font-size:.85rem;color:#c62828;margin-top:8px;">Collected amount differs from the expected amount — waiting for admin approval.</p>
+                <p style="font-size:.85rem;color:#c62828;margin-top:8px;">Collected amount differs from the order total — waiting for admin approval.</p>
                 {% endif %}
-                {% if order.cod_expected > 0 and not order.delivery_receipt_at %}
-                <p style="font-size:.85rem;color:#e65100;margin-top:8px;">Record the money you collected (card below) before marking delivered.</p>
+                {% if order.total_amount > prepay_max and not order.delivery_receipt_path %}
+                <p style="font-size:.85rem;color:#e65100;margin-top:8px;">Upload COD receipt below before marking delivered.</p>
                 {% endif %}
                 {% endif %}
             </form>
@@ -188,103 +194,56 @@
         </div>
         {% endif %}
 
-        {% if order.cod_expected > 0 or order.delivery_receipt_at %}
-        <div class="card" style="border:2px solid #2e7d32;">
-            <h3>💰 Collect the payment / ክፍያ ይሰብስቡ</h3>
-            <p style="font-size:1.8rem;font-weight:800;margin:4px 0;color:#1b5e20;">{{ '%.0f'|format(order.cod_expected or order.total_amount) }} ብር</p>
-            <p style="font-size:.9rem;color:#555;margin:0 0 10px;">Take this amount from the customer when you hand over the goods — <strong>cash</strong> or <strong>bank transfer</strong> to one of the shop accounts below.</p>
-
-            {% if order.delivery_receipt_at %}
+        {% if order.total_amount > prepay_max %}
+        <div class="card" style="border:2px solid #e65100;">
+            <h3>🧾 Over 100,000 — COD receipt to Admin</h3>
+            <p style="font-size:.9rem;color:#555;">
+                Collect <strong>{{ '%.0f'|format(order.total_amount) }} ብር</strong> on delivery, then send receipt photo.
+            </p>
+            {% if order.delivery_receipt_path %}
             <div style="background:#e8f5e9;padding:12px;border-radius:10px;margin:10px 0;">
-                <p style="color:#2e7d32;font-weight:700;margin:0;">✓ Recorded: {{ 'CASH' if order.pay_method == 'cash' else 'BANK TRANSFER' }} — {{ '%.0f'|format(order.cod_amount_collected or 0) }} ብር</p>
-                {% if order.pay_method == 'transfer' and order.transaction_id %}<p style="margin:6px 0 0;">Transaction: <code>{{ order.transaction_id }}</code></p>{% endif %}
-                {% if order.delivery_receipt_note %}<p style="margin:6px 0 0;color:#e65100;">{{ order.delivery_receipt_note }}</p>{% endif %}
-                {% if order.delivery_receipt_path %}
-                <a href="{{ url_for('order_file', oid=order.id, kind='cod') }}" target="_blank" rel="noopener">
-                    <img src="{{ url_for('order_file', oid=order.id, kind='cod') }}" alt="proof" style="max-width:100%;max-height:200px;margin-top:8px;border-radius:8px;">
-                </a>
+                <p style="color:#2e7d32;font-weight:700;margin:0;">✓ Receipt sent</p>
+                {% if order.cod_amount_collected %}
+                <p style="margin:6px 0 0;">Collected: {{ '%.0f'|format(order.cod_amount_collected) }} ብር
+                    {% if order.cod_amount_collected != order.total_amount %}
+                    <span style="color:#e65100;">(order total {{ '%.0f'|format(order.total_amount) }})</span>
+                    {% endif %}
+                </p>
                 {% endif %}
-                <p style="font-size:.85rem;color:#555;margin:8px 0 0;">Hand the cash to the shop as agreed — the admin marks it as received.</p>
+                <a href="{{ url_for('order_file', oid=order.id, kind='cod') }}" target="_blank" rel="noopener">
+                    <img src="{{ url_for('order_file', oid=order.id, kind='cod') }}"
+                         alt="receipt" style="max-width:100%;max-height:200px;margin-top:8px;border-radius:8px;">
+                </a>
             </div>
-            {% endif %}
-
-            {% if banks and not order.delivery_receipt_at %}
-            <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:10px;padding:12px;margin:10px 0;">
-                <strong>Shop bank accounts (show the customer to pay by transfer) / የሱቁ የባንክ አካውንቶች</strong>
-                {% for b in banks %}
-                <div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:10px;margin-top:8px;">
-                    <div><strong>{{ b.bank_name }}</strong></div>
-                    <div style="font-size:.9rem;color:#555;">{{ b.account_name }}</div>
-                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;">
-                        <code style="font-size:1.15rem;letter-spacing:1px;">{{ b.account_number }}</code>
-                        <button type="button" class="btn" style="padding:6px 12px;font-size:.85rem;" data-copy="{{ b.account_number }}">Copy</button>
-                    </div>
-                </div>
-                {% endfor %}
-                <p style="font-size:.8rem;color:#777;margin:8px 0 0;">After a transfer, check the customer's confirmation on their phone and write the transaction number below.</p>
-            </div>
-            {% elif not banks and not order.delivery_receipt_at %}
-            <p style="color:#c62828;font-size:.9rem;">No shop bank account is set up yet — accept <strong>cash</strong> only, or ask the admin.</p>
-            {% endif %}
-
-            {% if not closed and not order.delivery_receipt_at %}
-              {% if order.status == 'out_for_delivery' %}
-            <form method="POST" action="{{ url_for('transporter_delivery_receipt', oid=order.id) }}" enctype="multipart/form-data" style="margin-top:12px;"
-                  onsubmit="return confirm('Save this payment?');">
+            {% elif not closed and order.status != 'out_for_delivery' %}
+            <p style="color:#e65100;">First press <strong>Out for delivery</strong>, then upload the COD receipt.</p>
+            {% elif not closed and order.status == 'out_for_delivery' %}
+            <form method="POST" action="{{ url_for('transporter_delivery_receipt', oid=order.id) }}"
+                  enctype="multipart/form-data" style="margin-top:12px;"
+                  onsubmit="return confirm('Send this receipt to admin?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <div style="display:flex;gap:10px;margin-bottom:10px;">
-                    <label style="flex:1;border:2px solid #ccc;border-radius:10px;padding:12px;text-align:center;cursor:pointer;">
-                        <input type="radio" name="pay_method" value="cash" checked> Cash / ጥሬ ገንዘብ</label>
-                    <label style="flex:1;border:2px solid #ccc;border-radius:10px;padding:12px;text-align:center;cursor:pointer;">
-                        <input type="radio" name="pay_method" value="transfer"> Bank transfer / ዝውውር</label>
-                </div>
                 <div style="margin-bottom:10px;">
                     <label style="display:block;font-weight:600;margin-bottom:4px;">Amount collected (ብር) *</label>
-                    <input type="number" name="amount_collected" step="0.01" min="0.01" required value="{{ '%.0f'|format(order.cod_expected or order.total_amount) }}"
-                           style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:1.1rem;">
-                </div>
-                <div id="transferFields" style="display:none;">
-                    <div style="margin-bottom:10px;">
-                        <label style="display:block;font-weight:600;margin-bottom:4px;">Shop account the money went into *</label>
-                        <select name="bank_id" style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;">
-                            <option value="">— choose —</option>
-                            {% for b in banks %}<option value="{{ b.id }}">{{ b.bank_name }} — {{ b.account_number }}</option>{% endfor %}
-                        </select>
-                    </div>
-                    <div style="margin-bottom:10px;">
-                        <label style="display:block;font-weight:600;margin-bottom:4px;">Transaction number *</label>
-                        <input type="text" name="transaction_id" maxlength="80" autocomplete="off" placeholder="e.g. FT2431..."
-                               style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;">
-                    </div>
+                    <input type="number" name="amount_collected" step="0.01" required
+                           placeholder="{{ '%.0f'|format(order.cod_expected or order.total_amount) }}"
+                           style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;">
+                    <small style="color:#666;">Expected cash: {{ '%.0f'|format(order.cod_expected or order.total_amount) }} ብር{% if order.has_deposit %} (order total {{ '%.0f'|format(order.total_amount) }} − deposit {{ '%.0f'|format(order.deposit_amount) }} paid by bank){% endif %} — enter what you actually collected</small>
                 </div>
                 <div style="margin-bottom:10px;">
-                    <label style="display:block;font-weight:600;margin-bottom:4px;">Photo (transfer screen / optional)</label>
-                    <input type="file" name="receipt" accept="image/*" style="width:100%;padding:8px;">
+                    <label style="display:block;font-weight:600;margin-bottom:4px;">Receipt photo *</label>
+                    <input type="file" name="receipt" accept="image/*" required style="width:100%;padding:8px;">
                 </div>
                 <div style="margin-bottom:10px;">
-                    <input type="text" name="note" maxlength="180" placeholder="Note (optional)" style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;">
+                    <label style="display:block;font-weight:600;margin-bottom:4px;">Note (optional)</label>
+                    <input type="text" name="note" placeholder="e.g. cash / transfer"
+                           style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;">
                 </div>
-                <button type="submit" class="btn btn-green" style="width:100%;font-size:1.05rem;padding:14px;">✔ Save collected payment</button>
+                <button type="submit" class="btn btn-green" style="width:100%;font-size:1.05rem;padding:14px;">
+                    📤 Send receipt to Admin
+                </button>
             </form>
-              {% else %}
-            <p style="color:#e65100;">First press <strong>Out for delivery</strong>, then record the payment here.</p>
-              {% endif %}
             {% endif %}
         </div>
-        <script>
-        (function () {
-          var f = document.getElementById('transferFields');
-          document.querySelectorAll('input[name="pay_method"]').forEach(function (r) {
-            r.addEventListener('change', function () { if (f) f.style.display = (r.value === 'transfer' && r.checked) ? 'block' : 'none'; });
-          });
-          document.querySelectorAll('[data-copy]').forEach(function (b) {
-            b.addEventListener('click', function () {
-              var v = b.getAttribute('data-copy');
-              if (navigator.clipboard) { navigator.clipboard.writeText(v); b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
-            });
-          });
-        })();
-        </script>
         {% endif %}
 
     </div>

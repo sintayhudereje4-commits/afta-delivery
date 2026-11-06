@@ -2,9 +2,9 @@
 {% set st_labels = ({'pending':'በመጠባበቅ ላይ','confirmed':'ተረጋግጧል','preparing':'በዝግጅት ላይ','out_for_delivery':'በመንገድ ላይ','delivered':'ደርሷል','cancelled':'ተሰርዟል'}
                     if current_lang == 'am' else
                     {'pending':'Pending','confirmed':'Confirmed','preparing':'Preparing','out_for_delivery':'Out for delivery','delivered':'Delivered','cancelled':'Cancelled'}) %}
-{% set pay_labels = ({'awaiting_quote':'የማድረሻ ዋጋ በመጠባበቅ ላይ','awaiting_customer':'የእርስዎን ማረጋገጫ ይጠብቃል','pending':'ክፍያ በመጠባበቅ ላይ','rejected':'ክፍያ ውድቅ ተደርጓል','confirmed':'ክፍያ ተረጋግጧል','cod':'ሲደርስ ይከፈላል','not_required':'ሲደርስ ይከፈላል'}
+{% set pay_labels = ({'awaiting_quote':'የማድረሻ ዋጋ በመጠባበቅ ላይ','awaiting_customer':'የእርስዎን ማረጋገጫ ይጠብቃል','pending':'ክፍያ በመጠባበቅ ላይ','rejected':'ክፍያ ውድቅ ተደርጓል','confirmed':'ክፍያ ተረጋግጧል','not_required':'ክፍያ አያስፈልግም'}
                      if current_lang == 'am' else
-                     {'awaiting_quote':'Waiting for delivery fee','awaiting_customer':'Waiting for your confirmation','pending':'Waiting for payment','rejected':'Payment rejected','confirmed':'Payment confirmed','cod':'Pay on delivery','not_required':'Pay on delivery'}) %}
+                     {'awaiting_quote':'Waiting for delivery fee','awaiting_customer':'Waiting for your confirmation','pending':'Waiting for payment','rejected':'Payment rejected','confirmed':'Payment confirmed','not_required':'No payment needed'}) %}
 {% block title %}{% if current_lang == 'am' %}ትዕዛዝ ተሳክቷል{% else %}Order Successful{% endif %} - {{ settings.site_name }}{% endblock %}
 
 {% block content %}
@@ -67,29 +67,66 @@
 
         <div id="awaitingQuoteBox" class="order-details-box" style="margin-top:12px;background:#fff8e1;color:#e65100;{% if order.payment_status != 'awaiting_quote' %}display:none;{% endif %}">
             {% if current_lang == 'am' %}
-            ትዕዛዝዎ ተቀብሏል። ቡድናችን የማድረሻ ክፍያውን ካሳወቀ በኋላ ጠቅላላ ዋጋው እዚህ ይታያል፤ እርስዎ ያረጋግጣሉ። ይህን ገጽ ክፍት አድርገው ይጠብቁ።
+            ትዕዛዝዎ ተቀብሏል። ቡድናችን የማድረሻ ክፍያውን ካሳወቀ በኋላ የክፍያ መመሪያ እዚህ ይታያል። ይህን ገጽ ክፍት አድርገው ይጠብቁ።
             {% else %}
-            Order received. Once our team has worked out the delivery fee, the final price will appear here for you to confirm. Please keep this page open.
+            Order received. Once our team has worked out the delivery fee, the payment instructions will appear here. Please keep this page open.
             {% endif %}
         </div>
 
-        {% if order.payment_required and order.payment_status in ['pending', 'rejected'] %}
-        <div class="order-details-box" style="margin-top:12px;">
-            <p><strong>{% if current_lang == 'am' %}የክፍያ ሁኔታ{% else %}Payment status{% endif %}:</strong> {{ pay_labels.get(order.payment_status, order.payment_status) }}</p>
-            {% if order.payment_note %}<p>{{ order.payment_note }}</p>{% endif %}
+        <div id="paymentBox" class="order-details-box" style="margin-top:12px;{% if not (order.payment_required and order.payment_status in ['pending','rejected']) %}display:none;{% endif %}">
+            <p><strong>{% if current_lang == 'am' %}የክፍያ ሁኔታ{% else %}Payment status{% endif %}:</strong>
+                <span id="payStatus">{{ pay_labels.get(order.payment_status, order.payment_status) }}</span>
+            </p>
+            <p id="payNote">{% if order.payment_note %}{{ order.payment_note }}{% endif %}</p>
+            <p><strong>{% if current_lang == 'am' %}የእቃዎች{% else %}Items{% endif %}:</strong> {{ '%.0f'|format(order.items_subtotal or 0) }} ብር
+               + <strong>{% if current_lang == 'am' %}ዴሊቨሪ{% else %}Delivery{% endif %}:</strong> {{ '%.0f'|format(order.delivery_fee or 0) }} ብር
+               = <strong>{{ '%.0f'|format(order.total_amount) }} ብር</strong></p>
+            {% if order.has_deposit %}
+            <p style="font-size:1.15rem;background:#fff3e0;padding:10px 12px;border-radius:8px;">
+                {% if current_lang == 'am' %}
+                አሁን የሚከፈል (ቅድመ ክፍያ {{ deposit_percent }}%): <strong>{{ '%.0f'|format(order.deposit_amount) }} ብር</strong><br>
+                የቀረው <strong>{{ '%.0f'|format(order.cod_expected) }} ብር</strong> እቃው ሲደርስ ለአጓጓዡ በጥሬ ገንዘብ ይከፈላል።
+                {% else %}
+                Pay now (deposit {{ deposit_percent }}%): <strong>{{ '%.0f'|format(order.deposit_amount) }} ETB</strong><br>
+                The remaining <strong>{{ '%.0f'|format(order.cod_expected) }} ETB</strong> is paid in cash to the transporter when you receive the goods.
+                {% endif %}
+            </p>
+            {% endif %}
+            <p id="payPendingMsg" style="color:#e65100;">
+                {% if current_lang == 'am' %}እባክዎ ባንክ ያስገቡና ትራንዛክሽን ID ወይም ደረሰኝ ይላኩ።{% else %}Please deposit to a bank below and send transaction ID or receipt.{% endif %}
+            </p>
+            <form method="POST" action="{{ url_for('resubmit_payment', order_number=order.order_number) }}" enctype="multipart/form-data" style="text-align:left;max-width:420px;margin:12px auto;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="form-group">
+                    <label>{% if current_lang == 'am' %}ባንክ{% else %}Bank{% endif %}</label>
+                    <select name="bank_account_id" required style="width:100%;padding:8px;">
+                        <option value="">--</option>
+                        {% for b in banks %}
+                        <option value="{{ b.id }}">{{ b.bank_name }} — {{ b.account_name }} / {{ b.account_number }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Transaction ID</label>
+                    <input type="text" name="transaction_id" style="width:100%;padding:8px;">
+                </div>
+                <div class="form-group">
+                    <label>{% if current_lang == 'am' %}የደረሰኝ ፎቶ{% else %}Receipt photo{% endif %}</label>
+                    <input type="file" name="receipt" accept="image/*">
+                </div>
+                <button type="submit" class="btn btn-primary">{% if current_lang == 'am' %}ክፍያ አስረክብ{% else %}Submit payment{% endif %}</button>
+            </form>
+            <p id="payOkMsg" style="color:#2e7d32;display:none;">
+                {% if current_lang == 'am' %}ክፍያ ተረጋግጧል ✓{% else %}Payment confirmed ✓{% endif %}
+            </p>
         </div>
-        {% endif %}
 
-        {% if order.payment_status in ['cod', 'confirmed', 'not_required'] and order.cod_expected > 0 and order.status not in ('delivered', 'cancelled') %}
+        {% if order.has_deposit and order.payment_status == 'confirmed' and order.status not in ('delivered', 'cancelled') %}
         <div class="order-details-box" style="margin-top:12px;background:#e8f5e9;color:#1b5e20;">
             {% if current_lang == 'am' %}
-            <p style="margin:0 0 6px;"><strong>እቃው ሲደርስ ለአጓጓዡ ይከፍላሉ፦</strong></p>
-            <p style="font-size:1.6rem;font-weight:800;margin:0;">{{ '%.0f'|format(order.cod_expected) }} ብር</p>
-            <p style="font-size:.9rem;margin:8px 0 0;">በጥሬ ገንዘብ ወይም በባንክ ዝውውር — የባንክ አካውንቱን አጓጓዡ ያሳይዎታል። ለማንም ሌላ ሰው አይክፈሉ።</p>
+            ✓ ቅድመ ክፍያዎ ({{ '%.0f'|format(order.deposit_amount) }} ብር) ተረጋግጧል። እቃው ሲደርስ <strong>{{ '%.0f'|format(order.cod_expected) }} ብር</strong> በጥሬ ገንዘብ ለአጓጓዡ ያዘጋጁ።
             {% else %}
-            <p style="margin:0 0 6px;"><strong>You pay the driver when the goods arrive:</strong></p>
-            <p style="font-size:1.6rem;font-weight:800;margin:0;">{{ '%.0f'|format(order.cod_expected) }} ETB</p>
-            <p style="font-size:.9rem;margin:8px 0 0;">Cash or bank transfer - the driver will show you the account. Do not pay anyone else.</p>
+            ✓ Your deposit ({{ '%.0f'|format(order.deposit_amount) }} ETB) is confirmed. Please have <strong>{{ '%.0f'|format(order.cod_expected) }} ETB</strong> in cash ready for the transporter on delivery.
             {% endif %}
         </div>
         {% endif %}
@@ -98,11 +135,11 @@
             {% if current_lang == 'am' %}
             <p>የዴሊቨሪ ክፍያ <strong>{{ '%.0f'|format(order.delivery_fee or 0) }} ብር</strong> —
             ጠቅላላ <strong>{{ '%.0f'|format(order.total_amount) }} ብር</strong>።
-            እቃዎ ሲደርስ ለአጓጓዡ ይከፍላሉ (በጥሬ ገንዘብ ወይም በባንክ ዝውውር)።</p>
+            የባንክ ትራንስፈር አያስፈልግም — እቃዎ ሲደርስ ይከፍላሉ።</p>
             {% else %}
             <p>Delivery fee <strong>{{ '%.0f'|format(order.delivery_fee or 0) }} ETB</strong> —
             total <strong>{{ '%.0f'|format(order.total_amount) }} ETB</strong>.
-            You pay the driver when the goods arrive (cash or bank transfer).</p>
+            No bank transfer — pay when delivered.</p>
             {% endif %}
             <form method="POST" action="{{ url_for('accept_cod', order_number=order.order_number) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -182,7 +219,6 @@
   paint({{ order.status|tojson }});
   var lastPay = {{ order.payment_status|tojson }};
   var lastStatus = {{ order.status|tojson }};
-  var lastTotal = {{ order.total_amount|tojson }};
   var startedAt = Date.now();
   var finished = (lastStatus === 'delivered' || lastStatus === 'cancelled');
 
@@ -208,10 +244,6 @@
           est.textContent = d.estimated_delivery;
           di.hidden = false;
         }
-        if (typeof d.total_amount === 'number' && Math.abs(d.total_amount - lastTotal) > 0.5) {
-          location.reload();       // the price was updated
-          return;
-        }
         if (d.payment_status && d.payment_status !== lastPay) {
           lastPay = d.payment_status;
           location.reload();
@@ -219,6 +251,17 @@
         }
         var aq = document.getElementById('awaitingQuoteBox');
         if (aq) aq.style.display = d.payment_status === 'awaiting_quote' ? '' : 'none';
+        var payBox = document.getElementById('paymentBox');
+        if (payBox) {
+          var showPay = d.payment_required && (d.payment_status === 'pending' || d.payment_status === 'rejected');
+          payBox.style.display = showPay ? '' : 'none';
+          var ps = document.getElementById('payStatus');
+          if (ps) ps.textContent = payLabels[d.payment_status] || d.payment_status || '';
+          var pn = document.getElementById('payNote');
+          if (pn) pn.textContent = d.payment_note || '';
+          var po = document.getElementById('payOkMsg');
+          if (po) po.style.display = d.payment_status === 'confirmed' ? '' : 'none';
+        }
         var cod = document.getElementById('codBox');
         if (cod) cod.style.display = d.payment_status === 'awaiting_customer' ? '' : 'none';
       }).catch(function(){});

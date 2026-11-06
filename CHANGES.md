@@ -1,9 +1,3 @@
-# Version 8 - pay on delivery
-- All pre-payment removed (no bank choice, receipt upload, deposit). Everything is paid to the transporter when the goods arrive.
-- Transporter pages show the shop's bank accounts (copy button) and record cash / bank transfer collected; money held is shown.
-- Admin: Collected money page (cash received from transporters, transfers confirmed in the bank), price re-open, "customer agreed by phone".
-- Open orders are migrated to the new rule automatically.
-
 # Version 7 - security
 - Admin two-step login (TOTP + backup codes), security alerts for logins, Security page with live checklist, SECURITY.md, bounded requirements, extra CSP directives, startup security notes.
 

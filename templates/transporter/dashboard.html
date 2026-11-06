@@ -47,34 +47,6 @@
             {% endif %}
         {% endwith %}
 
-        {% if held_count %}
-        <div class="card" style="border-left:4px solid #e65100;">
-            <strong>Cash you are holding for the shop:</strong>
-            <span style="font-size:1.3rem;font-weight:800;color:#e65100;"> {{ '%.0f'|format(held_cash) }} ብር</span>
-            <small style="color:#666;">({{ held_count }} order{{ '' if held_count == 1 else 's' }}) — hand it over; the admin will mark it as received.</small>
-        </div>
-        {% endif %}
-        {% if banks %}
-        <details class="card">
-            <summary style="cursor:pointer;font-weight:700;">🏦 Shop bank accounts / የሱቁ የባንክ አካውንቶች</summary>
-            <p style="font-size:.85rem;color:#666;">If a customer wants to pay by transfer, show one of these accounts.</p>
-            {% for b in banks %}
-            <div style="border:1px solid #eee;border-radius:8px;padding:10px;margin-top:8px;">
-                <strong>{{ b.bank_name }}</strong> — {{ b.account_name }}<br>
-                <code style="font-size:1.1rem;">{{ b.account_number }}</code>
-                <button type="button" class="btn" style="padding:4px 10px;font-size:.8rem;margin-left:6px;" data-copy="{{ b.account_number }}">Copy</button>
-            </div>
-            {% endfor %}
-        </details>
-        <script>
-        document.querySelectorAll('[data-copy]').forEach(function (b) {
-          b.addEventListener('click', function () {
-            if (navigator.clipboard) { navigator.clipboard.writeText(b.getAttribute('data-copy')); b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
-          });
-        });
-        </script>
-        {% endif %}
-
         <div class="tabs" style="margin-bottom:14px;">
             <a href="{{ url_for('transporter_dashboard', show='active') }}" class="{% if show != 'done' %}active{% endif %}">Active</a>
             <a href="{{ url_for('transporter_dashboard', show='done') }}" class="{% if show == 'done' %}active{% endif %}">Done</a>
@@ -107,14 +79,20 @@
                 {% endif %}
                 <p>
                     Payment:
-                    {% if o.cod_expected > 0 %}
-                        {% if o.delivery_receipt_at %}
-                            <span class="badge paid">Payment recorded ✓ ({{ o.pay_method }})</span>
+                    {% if o.total_amount > prepay_max and o.has_deposit %}
+                        <span class="badge unpaid">Collect {{ '%.0f'|format(o.cod_expected) }} ብር cash (deposit paid by bank)</span>
+                    {% elif o.total_amount > prepay_max %}
+                        <span class="badge unpaid">Collect on delivery (over 100,000)</span>
+                    {% elif o.payment_required %}
+                        {% if o.payment_status == 'confirmed' %}
+                            <span class="badge paid">Bank paid ✓</span>
+                        {% elif o.payment_status == 'rejected' %}
+                            <span class="badge unpaid">Payment rejected</span>
                         {% else %}
-                            <span class="badge unpaid">Collect {{ '%.0f'|format(o.cod_expected) }} ብር</span>
+                            <span class="badge unpaid">Payment pending</span>
                         {% endif %}
                     {% else %}
-                        <span class="badge paid">Already paid — no collection</span>
+                        <span class="badge paid">No collection needed (&lt; {{ prepay_min }} ብር)</span>
                     {% endif %}
                 </p>
             </div>

@@ -62,15 +62,48 @@
                         <textarea id="address_text" name="address_text" rows="2" placeholder="{% if current_lang == 'am' %}ክፍለ ከተማ፣ ሰፈር...{% else %}Subcity, neighborhood...{% endif %}"></textarea>
                     </div>
 
-                    <div class="payment-box" style="display:block;">
-                        <h3>{% if current_lang == 'am' %}ክፍያ እቃው ሲደርስ{% else %}Pay when it arrives{% endif %}</h3>
-                        <p style="margin:0;font-size:.95rem;">
+                    <div id="paymentSection" class="payment-box" style="display:none;">
+                        <h3>{% if current_lang == 'am' %}ባንክ ክፍያ (100–100,000 ብር){% else %}Bank payment (100–100,000 ETB){% endif %}</h3>
+                        <p id="payAmountLine"></p>
+                        <p style="font-size:0.9rem;margin-bottom:10px;">
                             {% if current_lang == 'am' %}
-                            አሁን ምንም መክፈል አያስፈልግም። ትዕዛዝዎን ተቀብለን የማድረሻ ክፍያውን እናሳውቅዎታለን፤ እርስዎ ያረጋግጣሉ። እቃው እጅዎ ሲደርስ ለአጓጓዡ በጥሬ ገንዘብ ወይም በባንክ ዝውውር ይከፍላሉ።
+                            ብሩን ወደ ከታች ካሉ አካውንቶች አስገብተው <strong>ትራንዛክሽን ID</strong> ወይም <strong>የደረሰኝ ፎቶ</strong> ይላኩ።
                             {% else %}
-                            Nothing to pay now. We will receive your order and tell you the delivery fee; you confirm it. You pay the driver when the goods reach you - cash or bank transfer.
+                            Deposit to an account below, then send <strong>transaction ID</strong> or <strong>receipt photo</strong>.
                             {% endif %}
                         </p>
+                        <div class="form-group">
+                            <label for="bank_account_id">{% if current_lang == 'am' %}የባንክ አይነት ይምረጡ *{% else %}Select bank type *{% endif %}</label>
+                            <select id="bank_account_id" name="bank_account_id">
+                                <option value="">{% if current_lang == 'am' %}-- ባንክ ይምረጡ --{% else %}-- Choose bank --{% endif %}</option>
+                                {% for b in banks %}
+                                <option value="{{ b.id }}"
+                                    data-name="{{ b.account_name }}"
+                                    data-number="{{ b.account_number }}"
+                                    data-bank="{{ b.bank_name }}">
+                                    {{ b.bank_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            {% if not banks %}
+                            <p style="color:#c62828;margin-top:8px;">{% if current_lang == 'am' %}የባንክ ክፍያ ለጊዜው አልተዘጋጀም — እባክዎ ያነጋግሩን{% else %}Bank payment is not available right now — please contact us{% endif %}</p>
+                            {% endif %}
+                        </div>
+                        <div id="bankDetails" class="bank-card" style="display:none;cursor:default;">
+                            <p><strong id="bdBank"></strong></p>
+                            <p>{% if current_lang == 'am' %}ባለቤት{% else %}Account name{% endif %}: <span id="bdName"></span></p>
+                            <p>{% if current_lang == 'am' %}አካውንት ቁጥር{% else %}Account number{% endif %}: <code id="bdNumber"></code>
+                               <button type="button" class="btn btn-sm btn-outline" id="copyAcc" style="margin-left:8px;">{% if current_lang == 'am' %}ቅዳ{% else %}Copy{% endif %}</button>
+                            </p>
+                        </div>
+                        <div class="form-group">
+                            <label>{% if current_lang == 'am' %}ትራንዛክሽን ID{% else %}Transaction ID{% endif %}</label>
+                            <input type="text" id="transaction_id" name="transaction_id" placeholder="e.g. FT123...">
+                        </div>
+                        <div class="form-group">
+                            <label>{% if current_lang == 'am' %}የደረሰኝ ፎቶ{% else %}Receipt photo{% endif %}</label>
+                            <input type="file" id="receipt" name="receipt" accept="image/*">
+                        </div>
                     </div>
 
                     <button type="submit" class="btn btn-primary btn-lg btn-block" id="submitOrderBtn">
@@ -91,11 +124,24 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const PREPAY_MIN = {{ prepay_min }};
+    const PREPAY_MAX = {{ prepay_max }};
     let cart = getCart();
     if (!cart.length) { window.location.href = '{{ url_for("cart") }}'; return; }
 
     let total = 0;
-    // The summary is always derived from the CURRENT cart prices,
+    let needPay = false;
+    let forcePay = false;   // set when the server says bank payment is required
+    const paySec = document.getElementById('paymentSection');
+    const bankSel = document.getElementById('bank_account_id');
+    const txInput = document.getElementById('transaction_id');
+    const recInput = document.getElementById('receipt');
+    const overNote = document.createElement('p');
+    overNote.style.cssText = 'background:#e3f2fd;padding:12px;border-radius:8px;margin:12px 0;color:#1565c0;display:none;';
+    overNote.textContent = '{% if current_lang == "am" %}ከ 100,000 ብር በላይ፦ የማድረሻ ክፍያ ከተጨመረ በኋላ {{ deposit_percent }}% ቅድመ ክፍያ በባንክ ይከፍላሉ፤ የቀረውን እቃው ሲደርስ ለአጓጓዡ በጥሬ ገንዘብ ይከፍላሉ።{% else %}Over 100,000 ETB: once the delivery fee is added you pay {{ deposit_percent }}% by bank as a deposit, and the rest in cash to the transporter when the goods arrive.{% endif %}';
+    paySec.parentNode.insertBefore(overNote, paySec);
+
+    // Summary and payment box are always derived from the CURRENT cart prices,
     // and re-derived whenever the prices are refreshed from the server.
     function renderSummary() {
         total = 0;
@@ -121,6 +167,20 @@ document.addEventListener('DOMContentLoaded', function () {
         html += `</ul><div class="summary-total"><strong>{% if current_lang == "am" %}ጠቅላላ (ያለ ዴሊቨሪ){% else %}Total (without delivery){% endif %}: ${total.toFixed(0)} ብር</strong></div>`;
         document.getElementById('orderSummary').innerHTML = html;
 
+        // Payment is requested later by admin after they set the delivery fee
+        needPay = false;
+        if (paySec) paySec.style.display = 'none';
+        if (bankSel) bankSel.disabled = true;
+        if (txInput) txInput.disabled = true;
+        if (recInput) recInput.disabled = true;
+        if (overNote) {
+          overNote.style.display = 'block';
+          overNote.style.background = '#fff8e1';
+          overNote.style.color = '#e65100';
+          overNote.textContent = '{% if current_lang == "am" %}ትዕዛዝዎን ተቀብለን የማድረሻ ክፍያውን እናሳውቅዎታለን። ከዚያ በኋላ የክፍያ መመሪያ ያያሉ።{% else %}We will receive your order first and tell you the delivery fee. After that you will see the payment instructions.{% endif %}';
+        }
+        var payLine = document.getElementById('payAmountLine');
+        if (payLine) payLine.innerHTML = '';
     }
     renderSummary();
     // Prices may have changed since the items were added: refresh, then recompute everything
@@ -263,6 +323,33 @@ document.addEventListener('DOMContentLoaded', function () {
         gpsStatus.textContent = '{% if current_lang == "am" %}የ GPS ቁልፉን ይጫኑ ወይም ፒኑን ይጎትቱ{% else %}Click the GPS button or drag the pin{% endif %}';
     }
 
+    const bankSelect = document.getElementById('bank_account_id');
+    const bankDetails = document.getElementById('bankDetails');
+    function showBankDetails() {
+        const opt = bankSelect.options[bankSelect.selectedIndex];
+        if (!opt || !opt.value) {
+            bankDetails.style.display = 'none';
+            return;
+        }
+        document.getElementById('bdBank').textContent = opt.getAttribute('data-bank') || opt.text;
+        document.getElementById('bdName').textContent = opt.getAttribute('data-name') || '';
+        document.getElementById('bdNumber').textContent = opt.getAttribute('data-number') || '';
+        bankDetails.style.display = 'block';
+    }
+    if (bankSelect) {
+        bankSelect.addEventListener('change', showBankDetails);
+    }
+    const copyBtn = document.getElementById('copyAcc');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', function () {
+            const num = document.getElementById('bdNumber').textContent;
+            if (num && navigator.clipboard) {
+                navigator.clipboard.writeText(num);
+                if (typeof showToast === 'function') showToast('{% if current_lang == "am" %}አካውንት ቁጥር ተቀድቷል{% else %}Account number copied{% endif %}');
+            }
+        });
+    }
+
     document.getElementById('checkoutForm').addEventListener('submit', async function (e) {
         e.preventDefault();
         const btn = document.getElementById('submitOrderBtn');
@@ -275,6 +362,17 @@ document.addEventListener('DOMContentLoaded', function () {
             showToast('{% if current_lang == "am" %}እባክዎ ትክክለኛ ቦታዎን በካርታ ያስቀምጡ{% else %}Please set your exact location on the map{% endif %}', 'error');
             return;
         }
+        if (needPay) {
+            const bank = document.getElementById('bank_account_id');
+            const tx = document.getElementById('transaction_id').value.trim();
+            const file = document.getElementById('receipt').files[0];
+            if (!bank || !bank.value) { showToast('{% if current_lang == "am" %}የባንክ አይነት ይምረጡ{% else %}Select bank type{% endif %}', 'error'); return; }
+            if (!tx && !file) {
+                showToast('{% if current_lang == "am" %}ትራንዛክሽን ID ወይም ደረሰኝ ያስፈልጋል{% else %}Transaction ID or receipt required{% endif %}', 'error');
+                return;
+            }
+        }
+
         // Stable key for this submit attempt (prevents double order on network retry)
         // The key is kept in localStorage (not just in memory): if the page is refreshed or closed
         // while the order is being sent, the next page load can ask the server whether the order
@@ -303,6 +401,14 @@ document.addEventListener('DOMContentLoaded', function () {
         fd.append('location_method', methodInput ? methodInput.value : 'manual');
         if (locationAccuracy != null) fd.append('location_accuracy_m', String(Math.round(locationAccuracy)));
         fd.append('notes', '');
+        if (needPay) {
+            const bank = document.getElementById('bank_account_id');
+            if (bank && bank.value) fd.append('bank_account_id', bank.value);
+            fd.append('transaction_id', document.getElementById('transaction_id').value.trim());
+            const file = document.getElementById('receipt').files[0];
+            if (file) fd.append('receipt', file);
+        }
+
         btn.disabled = true;
         try {
             const res = await fetch('{{ url_for("checkout") }}', { method: 'POST', body: fd });
@@ -319,6 +425,16 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             // The server answered "no": no order was created, so forget this attempt.
             try { localStorage.removeItem('afta_checkout_pending'); } catch (e) {}
+            if (data.code === 'payment_required') {
+                // The server's total says a bank deposit is required: show the payment box
+                // with fresh prices instead of leaving the customer stuck.
+                forcePay = true;
+                refreshCartPrices(function (fresh) {
+                    cart = fresh;
+                    renderSummary();
+                    paySec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                });
+            }
             showToast(data.error || 'Error', 'error');
             btn.disabled = false;
         } catch (err) {
